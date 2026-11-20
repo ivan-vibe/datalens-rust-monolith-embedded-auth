@@ -90,7 +90,9 @@ impl UsEntry {
 pub struct UsConnectionData {
     #[serde(default)]
     pub host: Option<String>,
-    #[serde(default)]
+    /// The UI sends the port as a number for some connectors and as a string for others
+    /// (the ClickHouse form posts `"8123"`), so both spellings are accepted.
+    #[serde(default, deserialize_with = "deserialize_opt_u16")]
     pub port: Option<u16>,
     #[serde(default)]
     pub db_name: Option<String>,
@@ -108,6 +110,29 @@ pub struct UsConnectionData {
     /// `ConnectionBase.cache_ttl_sec_override` (`us_connection_base.py`).
     #[serde(default)]
     pub cache_ttl_sec: Option<i64>,
+}
+
+
+/// Accepts `8123`, `"8123"` and `null` for a port.
+fn deserialize_opt_u16<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Port {
+        Number(u16),
+        Text(String),
+    }
+    match Option::<Port>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Port::Number(port)) => Ok(Some(port)),
+        Some(Port::Text(text)) => text
+            .trim()
+            .parse::<u16>()
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("invalid port {text:?}"))),
+    }
 }
 
 impl UsConnectionData {
@@ -422,5 +447,25 @@ mod tests {
         let error = entry.dataset_data().unwrap_err();
         assert_eq!(error.status(), 404);
         assert_eq!(error.code(), "ERR.DS_API.DB.DATASET_NOT_FOUND");
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::UsConnectionData;
+
+    #[test]
+    fn a_string_port_and_a_number_port_both_parse() {
+        let text: UsConnectionData =
+            serde_json::from_value(serde_json::json!({"host": "127.0.0.1", "port": "18123"}))
+                .expect("string port");
+        assert_eq!(text.port, Some(18123));
+        let number: UsConnectionData =
+            serde_json::from_value(serde_json::json!({"host": "127.0.0.1", "port": 18123}))
+                .expect("number port");
+        assert_eq!(number.port, Some(18123));
+        let missing: UsConnectionData =
+            serde_json::from_value(serde_json::json!({"host": "127.0.0.1"})).expect("no port");
+        assert_eq!(missing.port, None);
     }
 }

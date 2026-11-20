@@ -659,6 +659,18 @@ fn requires_postgres(connection: &UsConnection) -> Result<(), String> {
 
 /// Open and immediately close a session (`POST /connections/test_connection`).
 pub async fn test_connection(connection: &UsConnection) -> Result<(), String> {
+    if connection.kind == ConnectorKind::ClickHouse {
+        // The ClickHouse executor speaks HTTP; `SELECT 1` proves the endpoint and the
+        // credentials without touching any user table.
+        let config = dl_clickhouse::ClickHouseConfig::from_dsn(&connection.dsn)
+            .map_err(|error| format!("ClickHouse: {error}"))?;
+        let executor = dl_clickhouse::ClickHouseExecutor::new();
+        tokio::time::timeout(CONNECT_TIMEOUT, executor.query(&config, "SELECT 1"))
+            .await
+            .map_err(|_| "ClickHouse: connection timed out".to_string())?
+            .map_err(|error| format!("ClickHouse: {error}"))?;
+        return Ok(());
+    }
     requires_postgres(connection)?;
     let executor = tokio::time::timeout(
         CONNECT_TIMEOUT,
