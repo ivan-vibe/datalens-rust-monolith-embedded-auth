@@ -218,7 +218,7 @@ if (isMain) {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (['--net', '--console'].includes(arg)) options.push({ arg });
-    else if (['--cdp', '--url', '--eval', '--wait', '--shot', '--click-text', '--cookie', '--mouse', '--drag', '--dump-net'].includes(arg)) {
+    else if (['--cdp', '--url', '--eval', '--wait', '--shot', '--click-text', '--cookie', '--mouse', '--drag', '--dump-net', '--viewport'].includes(arg)) {
       if (arg === '--mouse' || arg === '--drag') {
         const count = arg === '--mouse' ? 2 : 4;
         options.push({ arg, values: args.slice(index + 1, index + 1 + count).map(Number) });
