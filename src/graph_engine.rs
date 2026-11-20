@@ -1434,11 +1434,14 @@ fn get_segments_y_axis(
     let y_placeholder = find_placeholder(placeholders, "y");
     let mut axes: Vec<Value> = Vec::new();
     let mut formattings: Vec<Value> = Vec::new();
-    for (index, title) in segment_titles.iter().enumerate() {
-        let is_opposite = false;
-        let placeholder = if is_opposite { y2_placeholder } else { y_placeholder };
+    let build_axis = |title: &str,
+                      index: i64,
+                      space: i64,
+                      is_opposite: bool,
+                      placeholder: Option<&Value>|
+     -> Value {
         let mut axis = Map::new();
-        axis.insert("top".to_string(), json!(format!("{}%", 4 * index as i64 + space * index as i64)));
+        axis.insert("top".to_string(), json!(format!("{}%", 4 * index + space * index)));
         axis.insert("height".to_string(), json!(format!("{space}%")));
         axis.insert("offset".to_string(), json!(0));
         axis.insert("lineWidth".to_string(), json!(1));
@@ -1468,12 +1471,23 @@ fn get_segments_y_axis(
             apply_placeholder_settings_to_axis(placeholder, &mut axis, true);
             add_axis_formatter(&mut axis, Some(placeholder), None);
         }
-        axes.push(Value::Object(axis));
+        Value::Object(axis)
+    };
+    for (index, title) in segment_titles.iter().enumerate() {
+        // One axis per segment, and — when the chart has a Y2 section — a second, opposite
+        // axis for that segment's `__y2` series. The series indexes come from `segments_map`,
+        // which numbers the pair as `2*i` / `2*i+1`; building only the left axes left the Y2
+        // series pointing past the end of the array (ChartKit: "invalid y-axis index").
+        let index = index as i64;
+        axes.push(build_axis(title, index, space, false, y_placeholder));
         formattings.push(Value::Null);
-        let _ = has_opposite;
-        let _ = config;
-        let _ = visualization_id;
+        if has_opposite {
+            axes.push(build_axis(title, index, space, true, y2_placeholder));
+            formattings.push(Value::Null);
+        }
     }
+    let _ = config;
+    let _ = visualization_id;
     (axes, formattings)
 }
 
@@ -5090,6 +5104,40 @@ mod graph_remainder_tests {
                 }
             }]
         })
+    }
+
+    #[test]
+    fn segmented_y2_axes_cover_every_series_index() {
+        let graphs = json!([
+            {"custom": {"segmentTitle": "A"}},
+            {"custom": {"segmentTitle": "B"}},
+            {"custom": {"segmentTitle": "C"}},
+        ]);
+        let placeholders = json!([
+            {"id": "y", "items": [{}]},
+            {"id": "y2", "items": [{}]},
+        ]);
+        let placeholders = placeholders.as_array().unwrap();
+        let (axes, _) = get_segments_y_axis(&json!({}), placeholders, &graphs, "line");
+        // Three segments, two sides each: the `__y2` series indexes (1, 3, 5) must exist.
+        assert_eq!(axes.len(), 6);
+        let opposites: Vec<bool> = axes
+            .iter()
+            .map(|axis| axis.get("opposite").and_then(Value::as_bool).unwrap_or(false))
+            .collect();
+        assert_eq!(opposites, vec![false, true, false, true, false, true]);
+        // A pair shares the vertical slot.
+        assert_eq!(axes[0]["top"], axes[1]["top"]);
+        assert_eq!(axes[2]["top"], axes[3]["top"]);
+        assert_ne!(axes[0]["top"], axes[2]["top"]);
+
+        let (axes_without_y2, _) = get_segments_y_axis(
+            &json!({}),
+            &[json!({"id": "y", "items": [{}]})],
+            &graphs,
+            "line",
+        );
+        assert_eq!(axes_without_y2.len(), 3);
     }
 
     #[test]

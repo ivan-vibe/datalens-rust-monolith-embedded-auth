@@ -860,6 +860,16 @@ fn convert_kind(
         }
     }
 
+    // ChartKit indexes `yAxis` by the position in the axes array, while the segmented graphs
+    // carry the segment's plot index (0/1, 2/3, 4/5, ... — every segment may have a Y2 twin).
+    // With three Y2-only segments that gave series yAxis 1/3/5 against a three-element axes
+    // array and ChartKit rejected index 3 as invalid. Keep `plotIndex` on the axis (it drives
+    // the stacked layout) and remap the series to the dense array position.
+    if !split_titles.is_empty() {
+        let plot_indexes: Vec<i64> = split_titles.iter().map(|(index, _)| *index).collect();
+        remap_segmented_series_axes(&mut series_data, &plot_indexes);
+    }
+
     let mut data = json!({
         "tooltip": tooltip,
         "legend": legend,
@@ -882,6 +892,17 @@ fn convert_kind(
         data["split"] = split;
     }
     Ok(data)
+}
+
+/// Map a series' segment plot index onto its position in the segmented `yAxis` array.
+fn remap_segmented_series_axes(series: &mut [Value], plot_indexes: &[i64]) {
+    for item in series {
+        let Some(plot_index) = item.get("yAxis").and_then(Value::as_i64) else { continue };
+        let Some(position) = plot_indexes.iter().position(|candidate| *candidate == plot_index) else {
+            continue;
+        };
+        item["yAxis"] = json!(position as i64);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1193,4 +1214,30 @@ pub fn convert_combined(
         "xAxis": x_axis,
         "yAxis": y_axis,
     }))
+}
+
+#[cfg(test)]
+mod segmented_axis_tests {
+    use super::*;
+
+    #[test]
+    fn segmented_series_axes_are_dense_array_positions() {
+        // Three Y2-only segments: the graphs carry plot indexes 1, 3, 5.
+        let mut series = vec![
+            json!({"name": "a", "yAxis": 1}),
+            json!({"name": "b", "yAxis": 3}),
+            json!({"name": "c", "yAxis": 5}),
+        ];
+        remap_segmented_series_axes(&mut series, &[1, 3, 5]);
+        let indexes: Vec<i64> = series.iter().map(|item| item["yAxis"].as_i64().unwrap()).collect();
+        assert_eq!(indexes, vec![0, 1, 2]);
+        assert!(indexes.iter().all(|index| *index < 3));
+    }
+
+    #[test]
+    fn segmented_series_axes_keep_unknown_indexes_untouched() {
+        let mut series = vec![json!({"yAxis": 7})];
+        remap_segmented_series_axes(&mut series, &[1, 3, 5]);
+        assert_eq!(series[0]["yAxis"], 7);
+    }
 }
