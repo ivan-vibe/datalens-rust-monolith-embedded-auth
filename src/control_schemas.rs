@@ -1041,9 +1041,10 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
                     replace_array_item(content, "sources", source.clone());
                 }
             }
+            // The editor sends the full object: `{action, source: {id}}`, not a bare id.
             "delete_source" => {
-                if let Some(id) = update.get("source_id").and_then(Value::as_str) {
-                    remove_array_item(content, "sources", id, "id");
+                if let Some(id) = nested_id(update, "source").or_else(|| str_field(update, "source_id")) {
+                    remove_array_item(content, "sources", &id, "id");
                 }
             }
             "add_source_avatar" => {
@@ -1057,8 +1058,17 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
                 }
             }
             "delete_source_avatar" => {
-                if let Some(id) = update.get("source_avatar_id").and_then(Value::as_str) {
-                    remove_array_item(content, "source_avatars", id, "id");
+                if let Some(id) = nested_id(update, "source_avatar")
+                    .or_else(|| str_field(update, "source_avatar_id"))
+                {
+                    remove_array_item(content, "source_avatars", &id, "id");
+                }
+            }
+            "delete_avatar_relation" => {
+                if let Some(id) = nested_id(update, "avatar_relation")
+                    .or_else(|| str_field(update, "avatar_relation_id"))
+                {
+                    remove_array_item(content, "avatar_relations", &id, "id");
                 }
             }
             "add_field" => {
@@ -1072,13 +1082,26 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
                 }
             }
             "delete_field" => {
-                if let Some(guid) = update.get("guid").and_then(Value::as_str) {
-                    remove_array_item(content, "result_schema", guid, "guid");
+                if let Some(guid) = nested_id(update, "field").or_else(|| str_field(update, "guid")) {
+                    remove_array_item(content, "result_schema", &guid, "guid");
                 }
             }
             _ => {}
         }
     }
+}
+
+
+fn str_field(update: &Value, key: &str) -> Option<String> {
+    update.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn nested_id(update: &Value, key: &str) -> Option<String> {
+    update
+        .get(key)
+        .and_then(|value| value.get("id").or_else(|| value.get("guid")))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn push_array_item(content: &mut Value, key: &str, item: Value) {
@@ -1147,10 +1170,13 @@ pub fn normalize_editor_content(mut content: Value) -> Value {
         .and_then(Value::as_array)
         .map(|collections| !collections.is_empty())
         .unwrap_or(false);
+    // Rebuild whenever the editor's `sources` is present (even empty): a deleted source must
+    // not survive as a stale `source_collections` entry.
     let sources = match content.get("sources").and_then(Value::as_array) {
-        Some(sources) if !has_collections && !sources.is_empty() => sources.clone(),
-        _ => return content,
+        Some(sources) => sources.clone(),
+        None => return content,
     };
+    let _ = has_collections;
     let mut collections = Vec::with_capacity(sources.len());
     for source in &sources {
         let mut origin = serde_json::Map::new();
