@@ -80,7 +80,20 @@ python3 scripts/dataset_editor_smoke.py --base-url http://127.0.0.1:8099 \
 PASS dataset editor smoke
 ```
 
-### 3. Браузерный E2E (Node + Chrome DevTools Protocol)
+### 3. Оси графиков и диагностика (Python, живой монолит)
+
+`scripts/chart_axes_smoke.py` (+ фикстура `scripts/fixtures/charts/segmented_y2_shared.json`)
+проверяет два найденных бага:
+
+* сегментированный чарт с Y2: `yAxis` содержит по паре осей на сегмент, а каждый
+  `series.yAxis` — плотный индекс внутри массива (было: серия с индексом 3 при трёх осях →
+  ChartKit «некорректный индекс для оси Y»);
+* чарт без Y: ответ сохраняет конкретное `graph: y placeholder is empty`, а не общее
+  `chart type … is not supported`.
+
+Запуск: `make smoke-axes`.
+
+### 4. Браузерный E2E (Node + Chrome DevTools Protocol)
 
 `scripts/ui_dataset_editor_e2e.mjs` повторяет то, что делает человек:
 
@@ -104,7 +117,7 @@ node scripts/ui_dataset_editor_e2e.mjs --out /tmp/e2e --keep-page
 `WebSocket`). Умеет `--url`, `--eval`, `--wait`, `--shot`, `--net`, `--console`, `--mouse`,
 `--drag`, `--click-text`; используется и как CLI для ручной отладки.
 
-### 4. Живой смоук дашборда и сборки
+### 5. Живой смоук дашборда и сборки
 
 После каждого рестарта/сборки:
 

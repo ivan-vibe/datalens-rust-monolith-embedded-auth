@@ -110,6 +110,8 @@ Standalone-бинарник auth (`cd auth && cargo build --release`) остаё
 * `make test` — юнит-тесты монолита и auth;
 * `make smoke-dataset` — replay реального запроса редактора (вторая таблица, связь,
   `refresh_source`) против запущенного стенда, с проверкой ссылок `avatar/source/field`;
+* `make smoke-axes` — сегментированные чарты с Y2: индексы осей должны быть плотными
+  (баг «некорректный индекс для оси Y»), плюс диагностика пустого Y;
 * `make e2e-ui` — браузерный сценарий через Chrome DevTools Protocol: две таблицы drag-and-drop,
   проверка ответа валидатора и нормального 400 до настройки join'а.
 
