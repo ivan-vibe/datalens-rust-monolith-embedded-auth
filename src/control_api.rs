@@ -1469,8 +1469,12 @@ async fn field_validate_version(
     validation_response(status, payload)
 }
 
-fn requested_content<'a>(body: &'a Value, stored: &'a Value) -> &'a Value {
-    body.get("dataset").filter(|value| value.is_object()).unwrap_or(stored)
+fn requested_content(body: &Value, stored: &Value) -> Value {
+    let content = body
+        .get("dataset")
+        .filter(|value| value.is_object())
+        .unwrap_or(stored);
+    schemas::normalize_editor_content(content.clone())
 }
 
 async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> Response {
@@ -1493,9 +1497,9 @@ async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> R
         .unwrap_or_default();
     let conn_types = connection_types(&conn_ids).await;
     let conn_type = conn_ids.first().and_then(|id| conn_types.get(id)).map(String::as_str);
-    let issues = schemas::content_formula_issues(content, conn_type);
-    let options = schemas::dataset_options(content, &conn_types);
-    let (status, payload) = schemas::dataset_validation_payload(content, options, &issues);
+    let issues = schemas::content_formula_issues(&content, conn_type);
+    let options = schemas::dataset_options(&content, &conn_types);
+    let (status, payload) = schemas::dataset_validation_payload(&content, options, &issues);
     validation_response(status, payload)
 }
 
@@ -1512,7 +1516,7 @@ async fn dataset_validate_version(
         Err(response) => return response,
     };
     let stored = schemas::dataset_content(&entry);
-    let mut content = requested_content(&body, &stored).clone();
+    let mut content = requested_content(&body, &stored);
     let updates = body.get("updates").cloned().unwrap_or_else(|| json!([]));
     // The data-api is the validator that can compile formulas: forward the same updates (plus
     // the inline dataset the editor sends on an unsaved change) and use its field list, which

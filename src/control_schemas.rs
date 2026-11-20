@@ -1023,6 +1023,57 @@ pub fn has_content_sources(content: &Value) -> bool {
 }
 
 /// Parse every formula field of `content` (the dataset validator's formula pass).
+/// The dataset editor posts its unsaved state as `sources` (editor shape); the stored entry
+/// and the query translator use `source_collections`. Without the conversion the validator
+/// sees no sources at all and reports "field ... has no source table" for every formula.
+pub fn normalize_editor_content(mut content: Value) -> Value {
+    let has_collections = content
+        .get("source_collections")
+        .and_then(Value::as_array)
+        .map(|collections| !collections.is_empty())
+        .unwrap_or(false);
+    let sources = match content.get("sources").and_then(Value::as_array) {
+        Some(sources) if !has_collections && !sources.is_empty() => sources.clone(),
+        _ => return content,
+    };
+    let mut collections = Vec::with_capacity(sources.len());
+    for source in &sources {
+        let mut origin = serde_json::Map::new();
+        for key in ["connection_id", "parameters"] {
+            if let Some(value) = source.get(key) {
+                origin.insert(key.to_string(), value.clone());
+            }
+        }
+        if let Some(raw) = source.get("raw_schema").and_then(Value::as_array) {
+            let columns: Vec<Value> = raw
+                .iter()
+                .map(|column| {
+                    json!({
+                        "name": column.get("name").cloned().unwrap_or(Value::Null),
+                        "type": column
+                            .get("user_type")
+                            .or_else(|| column.get("type"))
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            origin.insert("raw_schema".to_string(), Value::Array(columns));
+        }
+        collections.push(json!({
+            "id": source.get("id").cloned().unwrap_or(Value::Null),
+            "title": source.get("title").cloned().unwrap_or(Value::Null),
+            "type": source.get("source_type").cloned().unwrap_or(Value::Null),
+            "valid": source.get("valid").cloned().unwrap_or(json!(true)),
+            "origin": Value::Object(origin),
+        }));
+    }
+    if let Some(object) = content.as_object_mut() {
+        object.insert("source_collections".to_string(), Value::Array(collections));
+    }
+    content
+}
+
 pub fn content_formula_issues(content: &Value, conn_type: Option<&str>) -> Vec<Value> {
     array(content.get("result_schema"))
         .iter()
