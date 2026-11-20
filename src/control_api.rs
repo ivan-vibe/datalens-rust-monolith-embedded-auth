@@ -1627,16 +1627,18 @@ async fn dataset_validate_version(
         let conn_ids = schemas::source_connection_ids(&entry);
         let conn_types = connection_types(&conn_ids).await;
         let options = schemas::dataset_options(&content, &conn_types);
-        return validation_response(
-            400,
-            json!({
-                "dataset": content,
-                "options": options,
-                "code": "ERR.DS_API.VALIDATION.ERROR",
-                "message": "Validation finished with errors.",
-                "dataset_errors": [],
-            }),
-        );
+        // No per-field error survived the fallback pass: the request is valid, the batch
+        // preflight just failed early. Returning 400 with empty errors left the UI showing
+        // "Validation finished with errors" and nothing to fix.
+        let success = errors.is_empty();
+        let payload = json!({
+            "dataset": content,
+            "options": options,
+            "code": if success { Value::Null } else { json!("ERR.DS_API.VALIDATION.ERROR") },
+            "message": if success { Value::Null } else { json!("Validation finished with errors.") },
+            "dataset_errors": [],
+        });
+        return validation_response(if success { 200 } else { 400 }, payload);
     }
     if let Some(fields) = preflight_fields {
         for field in fields {
