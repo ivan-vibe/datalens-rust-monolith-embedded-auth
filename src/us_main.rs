@@ -358,6 +358,11 @@ pub async fn run() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // Official demo data, loaded by the monolith on a fresh database (no sidecar container).
+    if let Err(error) = crate::demo_seed::ensure().await {
+        tracing::warn!(error = %format!("{error:#}"), "demo seed skipped");
+    }
+
     let state = AppState {
         config: config.clone(),
         db,

@@ -38,6 +38,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod d3_area;
 mod bench_mock;
 mod data_direct;
+mod demo_seed;
 mod data_main;
 mod engine_main;
 mod memory;

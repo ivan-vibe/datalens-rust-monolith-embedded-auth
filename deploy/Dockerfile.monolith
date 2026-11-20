@@ -10,9 +10,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY auth ./auth
+COPY assets ./assets
 COPY vendor ./vendor
 # this fork links the auth crate as a library
-COPY auth ./auth
 ARG CARGO_FEATURES=""
 RUN if [ -n "$CARGO_FEATURES" ]; then cargo build --release --features "$CARGO_FEATURES"; \
     else cargo build --release; fi \

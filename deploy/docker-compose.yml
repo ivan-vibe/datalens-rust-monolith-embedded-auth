@@ -187,26 +187,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # One-shot: the official demo data, loaded from the Postgres image itself after the
-  # monolith has created the US schema. Nothing here comes from this repository.
-  seed:
-    image: ghcr.io/datalens-tech/datalens-postgres:16-1.3.0
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -e
-        export PGPASSWORD=postgres
-        until psql -h postgres -U pg-user -d pg-us-db -tAc "select 1 from workbooks limit 1" >/dev/null 2>&1; do sleep 2; done
-        count=$$(psql -h postgres -U pg-user -d pg-us-db -tAc "select count(*) from workbooks")
-        if [ "$$count" != "0" ]; then echo "demo data already present"; exit 0; fi
-        POSTGRES_USER_US=pg-user POSTGRES_PASSWORD_US=postgres POSTGRES_DB_US=pg-us-db         POSTGRES_USER_DEMO=pg-user POSTGRES_PASSWORD_DEMO=postgres POSTGRES_DB_DEMO=pg-demo-db         POSTGRES_HOST=postgres POSTGRES_PORT=5432 DEMO_DATA_NAME="DataLens Demo" HC=0 IS_FIX_DLS=false         INIT_DEMO_DATA=1 CONTROL_API_CRYPTO_KEY=ZGF0YWxlbnN1bnNlY3VyZWZlcm5ldGNyeXB0b2tleQo=         /init/seed-demo-data.sh
-    environment:
-      PGPASSWORD: postgres
-    depends_on:
-      monolith:
-        condition: service_healthy
-    restart: "no"
-
   ui:
     image: ghcr.io/datalens-tech/datalens-ui:0.3831.0
     environment:
