@@ -791,7 +791,10 @@ async fn dataset_create(headers: HeaderMap, Json(body): Json<Value>) -> Response
         })
         .unwrap_or_default();
     let conn_types = connection_types(&source_ids).await;
-    let stored = match schemas::stored_dataset_data(dataset, None, &conn_types) {
+    let mut content = Value::Object(dataset.clone());
+    schemas::reconcile_editor_content(&mut content);
+    let dataset = content.as_object().cloned().unwrap_or_else(|| dataset.clone());
+    let stored = match schemas::stored_dataset_data(&dataset, None, &conn_types) {
         Ok(stored) => stored,
         Err(message) => return message_response(StatusCode::BAD_REQUEST, message),
     };
@@ -863,7 +866,10 @@ async fn dataset_update_impl(dataset_id: &str, headers: &HeaderMap, body: Value)
         })
         .unwrap_or_default();
     let conn_types = connection_types(&source_ids).await;
-    let incoming = match schemas::stored_dataset_data(dataset, None, &conn_types) {
+    let mut content = Value::Object(dataset.clone());
+    schemas::reconcile_editor_content(&mut content);
+    let dataset = content.as_object().cloned().unwrap_or_else(|| dataset.clone());
+    let incoming = match schemas::stored_dataset_data(&dataset, None, &conn_types) {
         Ok(incoming) => incoming,
         Err(message) => return message_response(StatusCode::BAD_REQUEST, message),
     };
@@ -1480,7 +1486,13 @@ fn requested_content(body: &Value, stored: &Value) -> Value {
 
 /// The Python control-api turns a freshly added source into dataset fields by reading its
 /// schema; without that the editor has no fields to show and the source looks broken.
-async fn materialize_source_fields(content: &mut Value) {
+///
+/// This is also the schema-refresh path: `refresh` carries the source ids named by the
+/// editor's `refresh_source` updates. Their `raw_schema` is stale by definition, so it is
+/// re-read from the connector and the fields of that avatar are updated in place (or dropped
+/// when the column disappeared) instead of being skipped because a field already exists.
+async fn materialize_source_fields(content: &mut Value, refresh: &[String]) {
+    schemas::reconcile_editor_content(content);
     let sources = content
         .get("sources")
         .and_then(Value::as_array)
@@ -1499,65 +1511,135 @@ async fn materialize_source_fields(content: &mut Value) {
     let mut sources_out: Vec<Value> = Vec::with_capacity(sources.len());
     for source in &sources {
         let source_id = source.get("id").and_then(Value::as_str).unwrap_or_default();
-        let Some(avatar) = avatars.iter().find(|avatar| {
-            avatar.get("source_id").and_then(Value::as_str) == Some(source_id)
-        }) else {
-            continue;
-        };
-        let avatar_id = avatar.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        if schema
+        let Some(avatar) = avatars
             .iter()
-            .any(|field| field.get("avatar_id").and_then(Value::as_str) == Some(avatar_id.as_str()))
-        {
-            continue;
-        }
-        let connection_id = source.get("connection_id").and_then(Value::as_str).unwrap_or_default();
-        let Ok(entry) = connection_entry_with_secrets(connection_id).await else { continue };
-        let Ok(connection) = connections::resolved_connection(&entry) else { continue };
-        let source_type = source.get("source_type").and_then(Value::as_str).unwrap_or_default();
-        let parameters = source
-            .get("parameters")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let Ok(columns) = connections::source_schema(&connection, source_type, &parameters).await
+            .find(|avatar| avatar.get("source_id").and_then(Value::as_str) == Some(source_id))
         else {
             continue;
         };
-        // The Python control-api also fills the source's `raw_schema` and the display flags;
-        // the editor renders the source panel from them.
+        let avatar_id = avatar.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
         let mut source = source.clone();
-        if let Some(object) = source.as_object_mut() {
-            object.insert("raw_schema".to_string(), Value::Array(columns.clone()));
-            object.entry("valid".to_string()).or_insert(json!(true));
-            object.entry("managed_by".to_string()).or_insert(json!("user"));
-            object.entry("virtual".to_string()).or_insert(json!(false));
-            object.entry("index_info_set".to_string()).or_insert(Value::Null);
+        let mut columns: Vec<Value> = source
+            .get("raw_schema")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let must_refresh = refresh.iter().any(|id| id == source_id) || columns.is_empty();
+        if must_refresh {
+            let connection_id = source.get("connection_id").and_then(Value::as_str).unwrap_or_default();
+            let source_type = source.get("source_type").and_then(Value::as_str).unwrap_or_default();
+            let parameters = source
+                .get("parameters")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let fresh = async {
+                let entry = connection_entry_with_secrets(connection_id).await.ok()?;
+                let connection = connections::resolved_connection(&entry).ok()?;
+                connections::source_schema(&connection, source_type, &parameters)
+                    .await
+                    .ok()
+            }
+            .await;
+            if let Some(fresh) = fresh.filter(|fresh| !fresh.is_empty()) {
+                columns = fresh;
+            }
+            // A failed read must not wipe the schema the editor already shows.
+        }
+        if !columns.is_empty() {
+            if let Some(object) = source.as_object_mut() {
+                object.insert("raw_schema".to_string(), Value::Array(columns.clone()));
+            }
+            let column_names: Vec<&str> = columns
+                .iter()
+                .filter_map(|column| column.get("name").and_then(Value::as_str))
+                .collect();
+            // A direct field whose column is gone (schema refreshed, source replaced) cannot
+            // be rendered and is exactly what the validator reports as an unknown reference.
+            schema.retain(|field| {
+                let direct = field.get("calc_mode").and_then(Value::as_str) == Some("direct");
+                if !direct {
+                    return true;
+                }
+                if field.get("avatar_id").and_then(Value::as_str) != Some(avatar_id.as_str()) {
+                    return true;
+                }
+                let source_name = field.get("source").and_then(Value::as_str).unwrap_or_default();
+                column_names.contains(&source_name)
+            });
+            for column in &columns {
+                let Some(name) = column.get("name").and_then(Value::as_str) else { continue };
+                let user_type = column
+                    .get("user_type")
+                    .or_else(|| column.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("string");
+                // Match by the source column, not the guid: a renamed field keeps its title
+                // and guid across a schema refresh.
+                let existing = schema.iter_mut().find(|field| {
+                    field.get("calc_mode").and_then(Value::as_str) == Some("direct")
+                        && field.get("avatar_id").and_then(Value::as_str) == Some(avatar_id.as_str())
+                        && field.get("source").and_then(Value::as_str) == Some(name)
+                });
+                if let Some(field) = existing {
+                    if let Some(object) = field.as_object_mut() {
+                        object.insert("initial_data_type".to_string(), json!(user_type));
+                        // A user cast wins over the column's native type; only auto-typed
+                        // fields follow the refreshed schema.
+                        let cast = object
+                            .get("cast")
+                            .and_then(Value::as_str)
+                            .filter(|cast| !cast.is_empty())
+                            .map(str::to_string);
+                        match cast {
+                            Some(cast) => {
+                                object.insert("data_type".to_string(), json!(cast));
+                            }
+                            None => {
+                                object.insert("data_type".to_string(), json!(user_type));
+                                object.insert("cast".to_string(), json!(user_type));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Two tables can expose a column with the same name (orders and managers
+                // both have `category_name_level_1`). The dataset requires unique field
+                // titles, and the reference editor disambiguates with ` (1)`, ` (2)`, ...
+                let mut guid = name.to_string();
+                let mut title = name.to_string();
+                let mut suffix = 0;
+                while schema.iter().any(|field| {
+                    field.get("guid").and_then(Value::as_str) == Some(guid.as_str())
+                }) {
+                    suffix += 1;
+                    guid = format!("{name}-{suffix}");
+                }
+                let mut title_suffix = 0;
+                while schema.iter().any(|field| {
+                    field.get("title").and_then(Value::as_str) == Some(title.as_str())
+                }) {
+                    title_suffix += 1;
+                    title = format!("{name} ({title_suffix})");
+                }
+                let mut field = schemas::direct_field(name, user_type, &avatar_id, &guid);
+                if let Some(object) = field.as_object_mut() {
+                    object.insert("title".to_string(), json!(title));
+                }
+                schema.push(field);
+            }
+            if let Some(object) = source.as_object_mut() {
+                object.entry("valid".to_string()).or_insert(json!(true));
+                object.entry("managed_by".to_string()).or_insert(json!("user"));
+                object.entry("virtual".to_string()).or_insert(json!(false));
+                object.entry("index_info_set".to_string()).or_insert(Value::Null);
+            }
         }
         sources_out.push(source);
-        for column in columns {
-            let Some(name) = column.get("name").and_then(Value::as_str) else { continue };
-            let user_type = column
-                .get("user_type")
-                .and_then(Value::as_str)
-                .unwrap_or("string");
-            let mut guid = name.to_string();
-            let mut suffix = 1;
-            while schema
-                .iter()
-                .any(|field| field.get("guid").and_then(Value::as_str) == Some(guid.as_str()))
-            {
-                suffix += 1;
-                guid = format!("{name}-{suffix}");
-            }
-            schema.push(schemas::direct_field(name, user_type, &avatar_id, &guid));
-        }
     }
     if let Some(object) = content.as_object_mut() {
         object.insert("result_schema".to_string(), Value::Array(schema));
-        if !sources_out.is_empty() {
-            object.insert("sources".to_string(), Value::Array(sources_out));
-        }
+        object.insert("sources".to_string(), Value::Array(sources_out));
     }
 }
 
@@ -1567,11 +1649,12 @@ async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> R
     }
     let reported = schemas::dataset_content(&Value::Null);
     let mut content = requested_content(&body, &reported);
-    if let Some(updates) = body.get("updates") {
-        schemas::apply_dataset_updates(&mut content, updates);
-        content = schemas::normalize_editor_content(content);
-    }
-    materialize_source_fields(&mut content).await;
+    let updates = body.get("updates").cloned().unwrap_or_else(|| json!([]));
+    schemas::apply_dataset_updates(&mut content, &updates);
+    let refresh = schemas::refresh_source_ids(&updates);
+    schemas::reconcile_editor_content(&mut content);
+    materialize_source_fields(&mut content, &refresh).await;
+    content = schemas::normalize_editor_content(content);
     let conn_ids: Vec<String> = content
         .get("sources")
         .and_then(Value::as_array)
@@ -1607,13 +1690,18 @@ async fn dataset_validate_version(
     let stored = schemas::dataset_content(&entry);
     let mut content = requested_content(&body, &stored);
     let updates = body.get("updates").cloned().unwrap_or_else(|| json!([]));
-    // The data-api is the validator that can compile formulas: forward the same updates (plus
-    // the inline dataset the editor sends on an unsaved change) and use its field list, which
-    // carries the inferred `data_type`s, as the authoritative `result_schema`.
-    let mut preflight_body = json!({"updates": updates});
-    if let Some(dataset) = body.get("dataset").filter(|value| value.is_object()) {
-        preflight_body["dataset"] = dataset.clone();
-    }
+    // Apply the batch on our side first: the editor posts its previous content plus updates,
+    // and a source replacement can leave an avatar (and its direct fields) pointing at a
+    // source that no longer exists. The data-api validates exactly those references.
+    schemas::apply_dataset_updates(&mut content, &updates);
+    let refresh = schemas::refresh_source_ids(&updates);
+    schemas::reconcile_editor_content(&mut content);
+    materialize_source_fields(&mut content, &refresh).await;
+    content = schemas::normalize_editor_content(content);
+    // The data-api is the validator that can compile formulas: forward the reconciled dataset
+    // (the updates are already applied to it) and use its field list, which carries the
+    // inferred `data_type`s, as the authoritative `result_schema`.
+    let preflight_body = json!({"dataset": content.clone()});
     let (status, preflight) = match data_api_preflight(&dataset_id, &preflight_body, &headers).await {
         Ok(answer) => answer,
         Err(response) => return response,

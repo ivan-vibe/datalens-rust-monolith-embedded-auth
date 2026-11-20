@@ -198,6 +198,16 @@ fn main() {
     {
         runtime_builder.max_blocking_threads(blocking);
     }
+    // The chart path walks user-controlled nested structures (formulas, pivot trees, JSON
+    // payloads) with recursion, and a stock 2 MiB worker stack overflows on a large dashboard
+    // in builds whose inlining differs from the fat-LTO release. 16 MiB is virtual, touched
+    // pages only; the knob exists for constrained containers.
+    let stack_mb = std::env::var("TOKIO_STACK_MB")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|size| (2..=256).contains(size))
+        .unwrap_or(16);
+    runtime_builder.thread_stack_size(stack_mb * 1024 * 1024);
     let runtime = runtime_builder.build().expect("service runtime");
     if embedded_auth {
         let bind = std::env::var("AUTH_BIND").unwrap_or_else(|_| "127.0.0.1".into());

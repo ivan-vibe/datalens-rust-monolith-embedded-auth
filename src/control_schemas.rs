@@ -1053,22 +1053,28 @@ pub fn direct_field(name: &str, user_type: &str, avatar_id: &str, guid: &str) ->
     })
 }
 
-/// Applies the editor's `updates` batch (`add_source`, `add_source_avatar`, field edits) to
-/// the dataset content. The root validator used to ignore them and returned an empty dataset,
-/// so a dropped table silently disappeared.
+/// Applies the editor's `updates` batch to the dataset content.
+///
+/// The editor posts its *previous* content together with the updates that produced the next
+/// one, and the same batch can contain several operations on one entity. Every add is
+/// therefore an idempotent upsert by id: applying a batch on top of content that already
+/// contains its result must not duplicate sources, avatars or relations.
 pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
     let Some(list) = updates.as_array() else { return };
     for update in list {
         let action = update.get("action").and_then(Value::as_str).unwrap_or("");
         match action {
-            "add_source" => {
+            // `source_replace` is the reducer's replace-the-table operation; the editor normally
+            // expands it into add/update/delete, but accept it directly as well.
+            "add_source" | "update_source" | "source_replace" => {
                 if let Some(source) = update.get("source") {
-                    push_array_item(content, "sources", source.clone());
+                    upsert_array_item(content, "sources", source.clone(), "id");
                 }
-            }
-            "update_source" => {
-                if let Some(source) = update.get("source") {
-                    replace_array_item(content, "sources", source.clone());
+                if let Some(avatar) = update
+                    .get("source_avatar")
+                    .or_else(|| update.get("avatar"))
+                {
+                    upsert_array_item(content, "source_avatars", avatar.clone(), "id");
                 }
             }
             // The editor sends the full object: `{action, source: {id}}`, not a bare id.
@@ -1077,14 +1083,9 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
                     remove_array_item(content, "sources", &id, "id");
                 }
             }
-            "add_source_avatar" => {
+            "add_source_avatar" | "update_source_avatar" => {
                 if let Some(avatar) = update.get("source_avatar") {
-                    push_array_item(content, "source_avatars", avatar.clone());
-                }
-            }
-            "update_source_avatar" => {
-                if let Some(avatar) = update.get("source_avatar") {
-                    replace_array_item(content, "source_avatars", avatar.clone());
+                    upsert_array_item(content, "source_avatars", avatar.clone(), "id");
                 }
             }
             "delete_source_avatar" => {
@@ -1092,6 +1093,13 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
                     .or_else(|| str_field(update, "source_avatar_id"))
                 {
                     remove_array_item(content, "source_avatars", &id, "id");
+                }
+            }
+            // Joins between two tables: without these the second source is unusable (the
+            // translator needs a relation for every extra avatar) and the editor cannot link.
+            "add_avatar_relation" | "update_avatar_relation" => {
+                if let Some(relation) = update.get("avatar_relation") {
+                    upsert_array_item(content, "avatar_relations", relation.clone(), "id");
                 }
             }
             "delete_avatar_relation" => {
@@ -1103,7 +1111,7 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
             }
             "add_field" => {
                 if let Some(field) = update.get("field") {
-                    push_array_item(content, "result_schema", field.clone());
+                    upsert_array_item(content, "result_schema", field.clone(), "guid");
                 }
             }
             "update_field" => {
@@ -1121,6 +1129,205 @@ pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
     }
 }
 
+/// Ids of the sources whose schema the batch asks to re-read (`refresh_source`).
+///
+/// The reducer sends one `refresh_source` per existing source on refresh, and the handler must
+/// turn that into a real connector round-trip: the editor's own `raw_schema` is stale by
+/// definition, and simply re-materializing from it changes nothing.
+pub fn refresh_source_ids(updates: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    for update in array(Some(updates)) {
+        if update.get("action").and_then(Value::as_str) != Some("refresh_source") {
+            continue;
+        }
+        let id = nested_id(update, "source")
+            .or_else(|| str_field(update, "source_id"));
+        if let Some(id) = id.filter(|id| !id.is_empty()) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+/// Makes the source/avatar/field references of editor content self-consistent.
+///
+/// The invariant the data-api relies on (`dl_core::Dataset::from(RawDataset)`):
+/// * every `field.avatar_id` names an avatar of `source_avatars`,
+/// * every `source_avatars[].source_id` names a source of `sources`,
+/// * every `avatar_relations` endpoint names an avatar.
+///
+/// The editor can post content where a source was replaced but its old avatar (and the direct
+/// fields hanging off it) survived; the validator then answers `field ... refers to unknown
+/// source` and the preview can never load again. Repair that here, before validation:
+/// drop avatars without a source and their direct fields, keep a field when its avatar id also
+/// names an existing source (the two-id shapes of the editor and of US), and give a source
+/// without an avatar one whose id is the source id so fields keyed by it survive.
+pub fn reconcile_editor_content(content: &mut Value) {
+    if content.get("sources").and_then(Value::as_array).is_none() {
+        return;
+    }
+    let mut sources = dedupe_by_id(array(content.get("sources")), "id");
+    let mut avatars = dedupe_by_id(array(content.get("source_avatars")), "id");
+    let source_ids: Vec<String> = sources.iter().filter_map(|source| id_field(source, "id")).collect();
+    if sources.is_empty() {
+        // No sources: preserving any avatar or direct field would keep dangling references.
+        let fields: Vec<Value> = array(content.get("result_schema"))
+            .iter()
+            .filter(|field| field.get("calc_mode").and_then(Value::as_str) != Some("direct"))
+            .cloned()
+            .collect();
+        if let Some(object) = content.as_object_mut() {
+            object.insert("sources".to_string(), json!([]));
+            object.insert("source_avatars".to_string(), json!([]));
+            object.insert("avatar_relations".to_string(), json!([]));
+            object.insert("result_schema".to_string(), Value::Array(fields));
+        }
+        return;
+    }
+    avatars.retain_mut(|avatar| {
+        let avatar_id = id_field(avatar, "id").unwrap_or_default();
+        let mut source_id = avatar
+            .get("source_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !source_ids.contains(&source_id) {
+            if source_ids.contains(&avatar_id) {
+                // The editor's simplest shape: one id for both the source and its avatar.
+                source_id = avatar_id.clone();
+            } else if source_id.is_empty() && source_ids.len() == 1 {
+                // An avatar without its own source in a single-source dataset: the only
+                // possible owner is that source.
+                source_id = source_ids[0].clone();
+            } else {
+                // The source was deleted/replaced but the avatar survived: it is an orphan.
+                return false;
+            }
+        }
+        if let Some(object) = avatar.as_object_mut() {
+            object.insert("source_id".to_string(), json!(source_id));
+        }
+        true
+    });
+    for source in &sources {
+        let Some(source_id) = id_field(source, "id") else { continue };
+        if avatars.iter().any(|avatar| {
+            avatar.get("source_id").and_then(Value::as_str) == Some(source_id.as_str())
+        }) {
+            continue;
+        }
+        let title = source
+            .get("title")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .or_else(|| source.pointer("/parameters/table_name").cloned())
+            .unwrap_or_else(|| json!(source_id));
+        avatars.push(json!({
+            "id": source_id,
+            "source_id": source_id,
+            "title": title,
+            "valid": true,
+            "is_root": false,
+            "managed_by": "user",
+            "virtual": false,
+        }));
+    }
+    let has_root = avatars.iter().any(|avatar| {
+        avatar.get("is_root").and_then(Value::as_bool).unwrap_or(false)
+    });
+    if !has_root {
+        if let Some(first) = avatars.first_mut().and_then(Value::as_object_mut) {
+            first.insert("is_root".to_string(), json!(true));
+        }
+    }
+    let avatar_ids: Vec<String> = avatars.iter().filter_map(|avatar| id_field(avatar, "id")).collect();
+    let mut relations = dedupe_by_id(array(content.get("avatar_relations")), "id");
+    relations.retain(|relation| {
+        let left = relation.get("left_avatar_id").and_then(Value::as_str).unwrap_or_default();
+        let right = relation.get("right_avatar_id").and_then(Value::as_str).unwrap_or_default();
+        avatar_ids.iter().any(|id| id == left) && avatar_ids.iter().any(|id| id == right)
+    });
+    let single_avatar = (avatar_ids.len() == 1).then(|| avatar_ids[0].clone());
+    let mut fields: Vec<Value> = array(content.get("result_schema"))
+        .iter()
+        .filter_map(|field| {
+            let mut field = field.clone();
+            if field.get("calc_mode").and_then(Value::as_str) != Some("direct") {
+                return Some(field);
+            }
+            let avatar_id = field
+                .get("avatar_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if avatar_ids.contains(&avatar_id) {
+                return Some(field);
+            }
+            // A single-source dataset has only one possible owner; keep old content working.
+            if avatar_id.is_empty() {
+                if let Some(single) = &single_avatar {
+                    if let Some(object) = field.as_object_mut() {
+                        object.insert("avatar_id".to_string(), json!(single));
+                    }
+                    return Some(field);
+                }
+            }
+            None
+        })
+        .collect();
+    if let Some(object) = content.as_object_mut() {
+        object.insert("sources".to_string(), Value::Array(std::mem::take(&mut sources)));
+        object.insert("source_avatars".to_string(), Value::Array(std::mem::take(&mut avatars)));
+        object.insert("avatar_relations".to_string(), Value::Array(std::mem::take(&mut relations)));
+        object.insert("result_schema".to_string(), Value::Array(std::mem::take(&mut fields)));
+    }
+}
+
+fn id_field(item: &Value, key: &str) -> Option<String> {
+    item.get(key)
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// Keep the last occurrence of every id: updates later in the batch win.
+fn dedupe_by_id(items: &[Value], id_key: &str) -> Vec<Value> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<Value> = Vec::with_capacity(items.len());
+    for item in items {
+        match id_field(item, id_key) {
+            Some(id) => match seen.get(&id) {
+                Some(index) => out[*index] = item.clone(),
+                None => {
+                    seen.insert(id, out.len());
+                    out.push(item.clone());
+                }
+            },
+            None => out.push(item.clone()),
+        }
+    }
+    out
+}
+
+fn upsert_array_item(content: &mut Value, key: &str, item: Value, id_key: &str) {
+    let Some(id) = id_field(&item, id_key) else {
+        push_array_item(content, key, item);
+        return;
+    };
+    let Some(array) = content.get_mut(key).and_then(Value::as_array_mut) else {
+        if let Some(object) = content.as_object_mut() {
+            object.insert(key.to_string(), json!([item]));
+        }
+        return;
+    };
+    if let Some(slot) = array.iter_mut().find(|candidate| id_field(candidate, id_key).as_deref() == Some(id.as_str())) {
+        *slot = item;
+    } else {
+        array.push(item);
+    }
+}
 
 fn str_field(update: &Value, key: &str) -> Option<String> {
     update.get(key).and_then(Value::as_str).map(str::to_string)
@@ -1143,29 +1350,6 @@ fn push_array_item(content: &mut Value, key: &str, item: Value) {
             *entry = json!([item]);
         }
     }
-}
-
-fn replace_array_item(content: &mut Value, key: &str, item: Value) {
-    let id = item
-        .get("id")
-        .or_else(|| item.get("guid"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if id.is_empty() {
-        push_array_item(content, key, item);
-        return;
-    }
-    if let Some(array) = content.get_mut(key).and_then(Value::as_array_mut) {
-        if let Some(slot) = array.iter_mut().find(|candidate| {
-            candidate.get("id").and_then(Value::as_str) == Some(id.as_str())
-                || candidate.get("guid").and_then(Value::as_str) == Some(id.as_str())
-        }) {
-            *slot = item;
-            return;
-        }
-    }
-    push_array_item(content, key, item);
 }
 
 fn merge_field(content: &mut Value, field: &Value) {
@@ -1905,6 +2089,119 @@ mod tests {
         let updated = dataset_write_response(None, &stored, "demo", &conn_types());
         assert!(updated.get("id").is_none());
         assert_eq!(updated.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_source_updates_are_idempotent() {
+        let mut content = json!({
+            "sources": [{"id": "s1", "source_type": "PG_TABLE", "connection_id": "c1"}],
+            "source_avatars": [{"id": "a1", "source_id": "s1"}],
+            "result_schema": [],
+        });
+        let updates = json!([
+            {"action": "add_source", "source": {"id": "s1", "source_type": "PG_TABLE", "connection_id": "c1"}},
+            {"action": "add_source_avatar", "source_avatar": {"id": "a1", "source_id": "s1"}},
+        ]);
+        apply_dataset_updates(&mut content, &updates);
+        apply_dataset_updates(&mut content, &updates);
+        assert_eq!(content["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(content["source_avatars"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconcile_drops_orphan_avatars_and_their_direct_fields() {
+        let mut content = json!({
+            "sources": [{"id": "s2", "title": "managers"}],
+            "source_avatars": [
+                {"id": "a1", "source_id": "s1"},
+                {"id": "a2", "source_id": "s2"},
+            ],
+            "result_schema": [
+                {"guid": "key_id", "calc_mode": "direct", "avatar_id": "a1", "source": "key_id"},
+                {"guid": "id", "calc_mode": "direct", "avatar_id": "a2", "source": "id"},
+                {"guid": "formula", "calc_mode": "formula", "avatar_id": "a1", "formula": "[id]"},
+            ],
+        });
+        reconcile_editor_content(&mut content);
+        let avatars = content["source_avatars"].as_array().unwrap();
+        assert_eq!(avatars.len(), 1);
+        assert_eq!(avatars[0]["id"], "a2");
+        assert_eq!(avatars[0]["is_root"], true);
+        let fields = content["result_schema"].as_array().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert!(fields.iter().any(|field| field["guid"] == "id"));
+        assert!(fields.iter().any(|field| field["guid"] == "formula"));
+    }
+
+    #[test]
+    fn reconcile_keeps_a_single_id_source_and_its_fields() {
+        let mut content = json!({
+            "sources": [{"id": "same", "title": "orders"}],
+            "source_avatars": [{"id": "same", "source_id": "gone"}],
+            "result_schema": [{"guid": "amount", "calc_mode": "direct", "avatar_id": "same", "source": "amount"}],
+        });
+        reconcile_editor_content(&mut content);
+        assert_eq!(content["source_avatars"][0]["source_id"], "same");
+        assert_eq!(content["result_schema"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconcile_creates_an_avatar_for_a_source_without_one() {
+        let mut content = json!({
+            "sources": [{"id": "s1", "title": "orders"}],
+            "source_avatars": [],
+            "result_schema": [{"guid": "amount", "calc_mode": "direct", "avatar_id": "s1", "source": "amount"}],
+        });
+        reconcile_editor_content(&mut content);
+        assert_eq!(content["source_avatars"].as_array().unwrap().len(), 1);
+        assert_eq!(content["source_avatars"][0]["id"], "s1");
+        assert_eq!(content["result_schema"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconcile_drops_dangling_and_duplicate_relations() {
+        let mut content = json!({
+            "sources": [{"id": "s1"}, {"id": "s2"}],
+            "source_avatars": [{"id": "a1", "source_id": "s1"}, {"id": "a2", "source_id": "s2"}],
+            "avatar_relations": [
+                {"id": "r1", "left_avatar_id": "a1", "right_avatar_id": "a2"},
+                {"id": "r1", "left_avatar_id": "a1", "right_avatar_id": "a2"},
+                {"id": "r2", "left_avatar_id": "a1", "right_avatar_id": "missing"},
+            ],
+            "result_schema": [],
+        });
+        reconcile_editor_content(&mut content);
+        let relations = content["avatar_relations"].as_array().unwrap();
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0]["id"], "r1");
+    }
+
+    #[test]
+    fn relations_from_updates_are_upserted() {
+        let mut content = json!({
+            "sources": [{"id": "s1"}, {"id": "s2"}],
+            "source_avatars": [{"id": "a1", "source_id": "s1"}, {"id": "a2", "source_id": "s2"}],
+            "avatar_relations": [],
+            "result_schema": [],
+        });
+        let updates = json!([
+            {"action": "add_avatar_relation", "avatar_relation": {"id": "r1", "left_avatar_id": "a1", "right_avatar_id": "a2"}},
+            {"action": "update_avatar_relation", "avatar_relation": {"id": "r1", "left_avatar_id": "a1", "right_avatar_id": "a2", "join_type": "inner"}},
+        ]);
+        apply_dataset_updates(&mut content, &updates);
+        assert_eq!(content["avatar_relations"].as_array().unwrap().len(), 1);
+        assert_eq!(content["avatar_relations"][0]["join_type"], "inner");
+    }
+
+    #[test]
+    fn refresh_source_ids_are_collected_once() {
+        let updates = json!([
+            {"action": "refresh_source", "source": {"id": "s1"}},
+            {"action": "refresh_source", "source": {"id": "s1"}},
+            {"action": "refresh_source", "source_id": "s2"},
+            {"action": "update_source", "source": {"id": "s3"}},
+        ]);
+        assert_eq!(refresh_source_ids(&updates), vec!["s1".to_string(), "s2".to_string()]);
     }
 
     #[test]
