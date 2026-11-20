@@ -7243,7 +7243,10 @@ async fn ui_run_inner(
             Ok(response) => return Ok(response),
             Err((status, message)) => {
                 std::hint::cold_path();
-                if status != StatusCode::NOT_IMPLEMENTED && failure.is_none() {
+                // Keep the builder's own 501 text: "graph: y placeholder is empty" tells the
+                // user what to fix, while the outer fallback would replace it with a generic
+                // "chart type ... is not supported" even though the type is supported.
+                if failure.is_none() {
                     failure = Some((status, message.clone()));
                 }
                 tracing::warn!(%message, "rust graph fallback")
