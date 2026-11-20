@@ -1023,6 +1023,36 @@ pub fn has_content_sources(content: &Value) -> bool {
 }
 
 /// Parse every formula field of `content` (the dataset validator's formula pass).
+/// One direct field for a source column, the shape the editor's validator produces.
+pub fn direct_field(name: &str, user_type: &str, avatar_id: &str, guid: &str) -> Value {
+    json!({
+        "valid": true,
+        "autoaggregated": false,
+        "managed_by": "user",
+        "aggregation": "none",
+        "has_auto_aggregation": false,
+        "virtual": false,
+        "data_type": user_type,
+        "lock_aggregation": false,
+        "title": name,
+        "initial_data_type": user_type,
+        "type": "DIMENSION",
+        "description": "",
+        "guid": guid,
+        "aggregation_locked": false,
+        "ui_settings": "",
+        "hidden": false,
+        "cast": user_type,
+        "source": name,
+        "avatar_id": avatar_id,
+        "calc_mode": "direct",
+        "formula": "",
+        "guid_formula": "",
+        "default_value": Value::Null,
+        "value_constraint": Value::Null,
+    })
+}
+
 /// Applies the editor's `updates` batch (`add_source`, `add_source_avatar`, field edits) to
 /// the dataset content. The root validator used to ignore them and returned an empty dataset,
 /// so a dropped table silently disappeared.

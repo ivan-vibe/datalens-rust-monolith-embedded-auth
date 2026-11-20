@@ -1477,6 +1477,75 @@ fn requested_content(body: &Value, stored: &Value) -> Value {
     schemas::normalize_editor_content(content.clone())
 }
 
+
+/// The Python control-api turns a freshly added source into dataset fields by reading its
+/// schema; without that the editor has no fields to show and the source looks broken.
+async fn materialize_source_fields(content: &mut Value) {
+    let sources = content
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let avatars = content
+        .get("source_avatars")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut schema = content
+        .get("result_schema")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for source in &sources {
+        let source_id = source.get("id").and_then(Value::as_str).unwrap_or_default();
+        let Some(avatar) = avatars.iter().find(|avatar| {
+            avatar.get("source_id").and_then(Value::as_str) == Some(source_id)
+        }) else {
+            continue;
+        };
+        let avatar_id = avatar.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        if schema
+            .iter()
+            .any(|field| field.get("avatar_id").and_then(Value::as_str) == Some(avatar_id.as_str()))
+        {
+            continue;
+        }
+        let connection_id = source.get("connection_id").and_then(Value::as_str).unwrap_or_default();
+        let Ok(entry) = connection_entry_with_secrets(connection_id).await else { continue };
+        let Ok(connection) = connections::resolved_connection(&entry) else { continue };
+        let source_type = source.get("source_type").and_then(Value::as_str).unwrap_or_default();
+        let parameters = source
+            .get("parameters")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let Ok(columns) = connections::source_schema(&connection, source_type, &parameters).await
+        else {
+            continue;
+        };
+        for column in columns {
+            let Some(name) = column.get("name").and_then(Value::as_str) else { continue };
+            let user_type = column
+                .get("user_type")
+                .and_then(Value::as_str)
+                .unwrap_or("string");
+            let mut guid = name.to_string();
+            let mut suffix = 1;
+            while schema
+                .iter()
+                .any(|field| field.get("guid").and_then(Value::as_str) == Some(guid.as_str()))
+            {
+                suffix += 1;
+                guid = format!("{name}-{suffix}");
+            }
+            schema.push(schemas::direct_field(name, user_type, &avatar_id, &guid));
+        }
+    }
+    if let Some(object) = content.as_object_mut() {
+        object.insert("result_schema".to_string(), Value::Array(schema));
+    }
+}
+
 async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> Response {
     if let Err(response) = require_user(&headers) {
         return response;
@@ -1487,6 +1556,7 @@ async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> R
         schemas::apply_dataset_updates(&mut content, updates);
         content = schemas::normalize_editor_content(content);
     }
+    materialize_source_fields(&mut content).await;
     let conn_ids: Vec<String> = content
         .get("sources")
         .and_then(Value::as_array)
