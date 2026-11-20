@@ -1023,6 +1023,121 @@ pub fn has_content_sources(content: &Value) -> bool {
 }
 
 /// Parse every formula field of `content` (the dataset validator's formula pass).
+/// Applies the editor's `updates` batch (`add_source`, `add_source_avatar`, field edits) to
+/// the dataset content. The root validator used to ignore them and returned an empty dataset,
+/// so a dropped table silently disappeared.
+pub fn apply_dataset_updates(content: &mut Value, updates: &Value) {
+    let Some(list) = updates.as_array() else { return };
+    for update in list {
+        let action = update.get("action").and_then(Value::as_str).unwrap_or("");
+        match action {
+            "add_source" => {
+                if let Some(source) = update.get("source") {
+                    push_array_item(content, "sources", source.clone());
+                }
+            }
+            "update_source" => {
+                if let Some(source) = update.get("source") {
+                    replace_array_item(content, "sources", source.clone());
+                }
+            }
+            "delete_source" => {
+                if let Some(id) = update.get("source_id").and_then(Value::as_str) {
+                    remove_array_item(content, "sources", id, "id");
+                }
+            }
+            "add_source_avatar" => {
+                if let Some(avatar) = update.get("source_avatar") {
+                    push_array_item(content, "source_avatars", avatar.clone());
+                }
+            }
+            "update_source_avatar" => {
+                if let Some(avatar) = update.get("source_avatar") {
+                    replace_array_item(content, "source_avatars", avatar.clone());
+                }
+            }
+            "delete_source_avatar" => {
+                if let Some(id) = update.get("source_avatar_id").and_then(Value::as_str) {
+                    remove_array_item(content, "source_avatars", id, "id");
+                }
+            }
+            "add_field" => {
+                if let Some(field) = update.get("field") {
+                    push_array_item(content, "result_schema", field.clone());
+                }
+            }
+            "update_field" => {
+                if let Some(field) = update.get("field") {
+                    merge_field(content, field);
+                }
+            }
+            "delete_field" => {
+                if let Some(guid) = update.get("guid").and_then(Value::as_str) {
+                    remove_array_item(content, "result_schema", guid, "guid");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_array_item(content: &mut Value, key: &str, item: Value) {
+    if let Some(object) = content.as_object_mut() {
+        let entry = object.entry(key.to_string()).or_insert_with(|| json!([]));
+        if let Some(array) = entry.as_array_mut() {
+            array.push(item);
+        } else {
+            *entry = json!([item]);
+        }
+    }
+}
+
+fn replace_array_item(content: &mut Value, key: &str, item: Value) {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("guid"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if id.is_empty() {
+        push_array_item(content, key, item);
+        return;
+    }
+    if let Some(array) = content.get_mut(key).and_then(Value::as_array_mut) {
+        if let Some(slot) = array.iter_mut().find(|candidate| {
+            candidate.get("id").and_then(Value::as_str) == Some(id.as_str())
+                || candidate.get("guid").and_then(Value::as_str) == Some(id.as_str())
+        }) {
+            *slot = item;
+            return;
+        }
+    }
+    push_array_item(content, key, item);
+}
+
+fn merge_field(content: &mut Value, field: &Value) {
+    let Some(guid) = field.get("guid").and_then(Value::as_str) else { return };
+    let Some(schema) = content.get_mut("result_schema").and_then(Value::as_array_mut) else { return };
+    let Some(slot) = schema
+        .iter_mut()
+        .find(|candidate| candidate.get("guid").and_then(Value::as_str) == Some(guid))
+    else {
+        schema.push(field.clone());
+        return;
+    };
+    if let (Some(target), Some(patch)) = (slot.as_object_mut(), field.as_object()) {
+        for (key, value) in patch {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn remove_array_item(content: &mut Value, key: &str, id: &str, id_key: &str) {
+    if let Some(array) = content.get_mut(key).and_then(Value::as_array_mut) {
+        array.retain(|candidate| candidate.get(id_key).and_then(Value::as_str) != Some(id));
+    }
+}
+
 /// The dataset editor posts its unsaved state as `sources` (editor shape); the stored entry
 /// and the query translator use `source_collections`. Without the conversion the validator
 /// sees no sources at all and reports "field ... has no source table" for every formula.

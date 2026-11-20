@@ -1482,7 +1482,11 @@ async fn dataset_validate_root(headers: HeaderMap, Json(body): Json<Value>) -> R
         return response;
     }
     let reported = schemas::dataset_content(&Value::Null);
-    let content = requested_content(&body, &reported);
+    let mut content = requested_content(&body, &reported);
+    if let Some(updates) = body.get("updates") {
+        schemas::apply_dataset_updates(&mut content, updates);
+        content = schemas::normalize_editor_content(content);
+    }
     let conn_ids: Vec<String> = content
         .get("sources")
         .and_then(Value::as_array)
