@@ -1,0 +1,20 @@
+[package]
+name = "dl_mysql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+dl_api = { path = "../dl_api" }
+futures.workspace = true
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "mysql",
+    "chrono",
+] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

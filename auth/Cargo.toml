@@ -1,0 +1,41 @@
+[package]
+name = "datalens-auth-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Standalone Rust port of the DataLens auth service (protocol-compatible with datalens-auth:0.27.0)"
+license = "Apache-2.0"
+
+[lib]
+name = "datalens_auth_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "datalens-auth-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+getrandom = "0.2"
+httpdate = "1"
+# Same feature set the monolith's vendored data-api uses: PEM keys + pure-Rust
+# RSA-PSS (no ring/aws-lc build dependency).
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+# Node `crypto.scrypt` defaults (N=16384, r=8, p=1, 64-byte key). The low-level
+# function is enough; the PHC/`Scrypt` struct features are not used.
+scrypt = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio-postgres = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true

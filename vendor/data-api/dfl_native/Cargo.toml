@@ -1,0 +1,16 @@
+[package]
+name = "dfl_native"
+version = "0.2.0"
+edition = "2021"
+description = "Native (Rust) compiler for DataLens formulas, driven by the dl_formula registry"
+
+[lib]
+name = "dfl_native"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "dfl-cli"
+path = "src/main.rs"
+
+[dependencies]
+# No dependencies on purpose: the compiler is a lexer, a Pratt parser and a lookup table.

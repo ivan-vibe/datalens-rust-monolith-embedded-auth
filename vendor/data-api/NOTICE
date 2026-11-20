@@ -1,0 +1,14 @@
+DataLens data-api — Rust
+Copyright 2026 the datalens-data-api Rust contributors
+
+This product is an independent Rust implementation of the DataLens data-api HTTP
+contract. It contains a formula compiler whose function and dialect registry is
+generated from the `dl_formula` package of the DataLens project:
+
+    DataLens — https://github.com/datalens-tech/datalens
+    Copyright 2023 YANDEX LLC
+    Licensed under the Apache License, Version 2.0.
+
+The names "DataLens" and "Yandex" and any associated marks are the property of
+their respective owners. This repository is not an official DataLens component
+and is not endorsed by the DataLens project.

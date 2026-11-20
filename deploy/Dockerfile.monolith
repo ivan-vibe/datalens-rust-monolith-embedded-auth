@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Single static Rust binary for the whole DataLens server side (US + data-api + ui-api +
+# control-api + meta-manager); the browser UI is a separate datalens-ui container.
+ARG VERSION_TAG=dev
+ARG GIT_COMMIT=unknown
+
+FROM rust:1-alpine AS build
+RUN apk add --no-cache musl-dev zstd-dev pkgconfig ca-certificates
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY auth ./auth
+COPY vendor ./vendor
+# this fork links the auth crate as a library
+COPY auth ./auth
+ARG CARGO_FEATURES=""
+RUN if [ -n "$CARGO_FEATURES" ]; then cargo build --release --features "$CARGO_FEATURES"; \
+    else cargo build --release; fi \
+ && cp target/release/datalens-monolith /src/monolith-bin
+
+FROM scratch
+ARG VERSION_TAG
+ARG GIT_COMMIT
+LABEL org.opencontainers.image.title="datalens-rust-monolith" \
+      org.opencontainers.image.version="${VERSION_TAG}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}"
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /src/monolith-bin /usr/local/bin/monolith
+ENV MONOLITH=1 PUBLIC_PORT=8099 RUST_LOG=info
+EXPOSE 8099
+ENTRYPOINT ["/usr/local/bin/monolith"]

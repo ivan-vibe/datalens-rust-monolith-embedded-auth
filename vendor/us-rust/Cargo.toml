@@ -1,0 +1,55 @@
+[package]
+name = "us-rs"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.82"
+description = "United Storage (DataLens) rewritten in Rust: drop-in binary replacement for the Node.js container"
+license = "Apache-2.0"
+
+[[bin]]
+name = "us-rs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+crc32fast = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+http = "1"
+http-body = "1"
+zstd = "0.13"
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rmp-serde = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "json",
+    "chrono",
+    "derive",
+] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net"] }
+tower-http = { version = "0.6", features = ["decompression-gzip", "decompression-deflate", "timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Profiling build: release speed with symbols for `sample`/Instruments.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+lto = "thin"
+codegen-units = 4
+
+[dev-dependencies]
+simd-json = "0.13"

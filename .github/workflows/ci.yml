@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: system deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libzstd-dev
+      - name: build monolith
+        run: cargo build --release
+      - name: test monolith
+        run: cargo test --release
+      - name: test auth
+        working-directory: auth
+        run: cargo test --release

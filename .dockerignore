@@ -1,0 +1,11 @@
+target
+bin
+deploy/run
+deploy/secrets
+deploy/certs
+deploy/seed/*.dump
+auth/target
+.git
+.gitignore
+GIT
+echo ok

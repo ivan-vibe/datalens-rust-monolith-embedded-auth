@@ -1,0 +1,12 @@
+[package]
+name = "dl_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust data model for the DataLens backend (dataset, fields, data types)"
+
+[dependencies]
+dfl_native.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "dl_us"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "United Storage (us) client for the Rust DataLens data-api"
+
+[dependencies]
+dl_core = { path = "../dl_core" }
+aes.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+cbc.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes = "1"
+tracing.workspace = true
+# Only for `dl_us::testing`, the mock `us` the crates above test against.
+axum.workspace = true

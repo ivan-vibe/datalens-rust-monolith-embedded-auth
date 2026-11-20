@@ -1,0 +1,18 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Local tooling
+.idea/
+.vscode/
+.DS_Store
+
+# Logs and local environment files
+*.log
+.env
+.env.*
+!.env.example
+
+target/
+.DS_Store
+.env

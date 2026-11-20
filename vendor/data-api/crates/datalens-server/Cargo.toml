@@ -1,0 +1,45 @@
+[package]
+name = "datalens-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust data-api server for DataLens (v2 data endpoints)"
+
+[lib]
+name = "datalens_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "datalens-server"
+path = "src/main.rs"
+
+[dependencies]
+bytes = "1"
+dl_api = { path = "../dl_api" }
+dl_core = { path = "../dl_core" }
+dl_query = { path = "../dl_query" }
+dl_postgres = { path = "../dl_postgres" }
+dl_clickhouse = { path = "../dl_clickhouse" }
+dl_mysql = { path = "../dl_mysql" }
+dl_us = { path = "../dl_us" }
+async-trait.workspace = true
+futures.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tower-http.workspace = true
+rmp-serde.workspace = true
+jsonwebtoken.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+# The compression test decodes what the layer produced.
+flate2 = "1"
+http-body-util.workspace = true
+
+[[bench]]
+name = "http"
+harness = false

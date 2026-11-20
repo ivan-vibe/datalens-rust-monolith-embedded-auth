@@ -1,0 +1,258 @@
+# DataLens Rust monolith — one project, one command:
+#
+#   docker compose up -d --build      # then open http://localhost:8091 (admin / admin)
+#
+# Services:
+#   postgres  – the official DataLens Postgres image (schema + demo data live only there)
+#   auth      – the Rust auth service (login/JWT/users)
+#   monolith  – the Rust monolith: US + data-api + ui-api/charts-engine + control-api + meta-manager
+#   seed      – one-shot: loads the official demo data shipped inside the Postgres image
+#   ui        – the official datalens-ui image, nginx on :8091
+#
+# No database dumps and no user data are stored in this repository. The demo workbooks come
+# from `ghcr.io/datalens-tech/datalens-postgres` (`/init/demo-data`), the same data the
+# official DataLens compose installs.
+#
+# The keys below are the *public demo defaults* from the official DataLens compose, not
+# secrets: they exist so the open-source demo runs out of the box. For anything real,
+# override AUTH__JWT_KEY / TOKEN_PRIVATE_KEY / *_MASTER_TOKEN / CONTROL_API_CRYPTO_KEY in
+# your environment or an override file.
+name: datalens-rust-embedded
+
+networks:
+  datalens:
+    driver: bridge
+
+volumes:
+  pg_data:
+
+services:
+  postgres:
+    image: ghcr.io/datalens-tech/datalens-postgres:16-1.3.0
+    environment:
+      POSTGRES_USER: pg-user
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_MAX_CONNECTIONS: "512"
+      POSTGRES_DUMP_SKIP_CONFLICT: "true"
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
+      PGDATA: /var/lib/postgresql/data
+      TZ: Etc/UTC
+      # The image creates every pg-* database; demo rows are loaded by the `seed` service
+      # after the monolith has created the US schema.
+      INIT_DB_AUTH: "1"
+      INIT_DB_DEMO: "1"
+      INIT_DB_META_MANAGER: "1"
+      INIT_DB_TEMPORAL: "0"
+      INIT_DEMO_DATA: "0"
+      INIT_EXTERNAL_POSTGRES: "0"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:25434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pg-user -d pg-us-db"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  monolith:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.monolith
+    environment:
+      MONOLITH: "1"
+      PUBLIC_PORT: "8099"
+      POSTGRES_DSN_LIST: postgres://pg-user:postgres@postgres:5432/pg-us-db
+      META_MANAGER_PG_DSN: postgres://pg-user:postgres@postgres:5432/pg-meta-manager-db
+      # demo datasets store the host `postgres` in their connection settings
+      DL_CONNECTION_HOST_MAP: postgres=postgres:5432
+      US_URL: http://127.0.0.1:8099
+      META_US_URL: http://127.0.0.1:8099
+      UI_PUBLIC_URL: http://127.0.0.1:8099
+      CONTROL_API_URL: http://127.0.0.1:8099
+      AUTH_ENABLED: "true"
+      AUTH__TYPE: NATIVE
+      AUTH__JWT_ALGORITHM: PS256
+      # Single-binary fork: the auth protocol is served by this process on :8097.
+      AUTH_EMBEDDED: "1"
+      AUTH_BIND: 0.0.0.0
+      AUTH_PORT: "8097"
+      AUTH_POSTGRES_DSN: postgres://pg-user:postgres@postgres:5432/pg-auth-db
+      AUTH_ADMIN_LOGIN: admin
+      AUTH_ADMIN_PASSWORD: admin
+      TOKEN_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA+HICDZMfimMIiGdd0dPr
+        2N3zxHOJqiVXuvUj/aBBS7c8760rJUh4344sP/0Gid558yH/v1MtzZ0R9w09v6gb
+        SNrSiNwIUNGPhbnm9Jf+kMezsI/rkcIdoVm3KJ8CFUYy6MRPzW7iJmIVRHBb82v1
+        mAYCCQFU6IRtFIa9hQ8wedWwxqXZekSNS+6NB37dmmQB9kz2E3MY+KRLigOh4i3p
+        CZ1ti3HVvMa9Rlgk9FmoWExzub5ECChqwm+vn8yFXjYW7kUSClcV2xx4nbQWqjrR
+        yyLk6W2BNOuCFVvz0j+5XkpLAt7tljtVZc+572HBEKpF2mAdmAip5NzeDhKqucJ+
+        ZQIDAQAB
+        -----END PUBLIC KEY-----
+      TOKEN_PRIVATE_KEY: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQD4cgINkx+KYwiI
+        Z13R0+vY3fPEc4mqJVe69SP9oEFLtzzvrSslSHjfjiw//QaJ3nnzIf+/Uy3NnRH3
+        DT2/qBtI2tKI3AhQ0Y+Fueb0l/6Qx7Owj+uRwh2hWbconwIVRjLoxE/NbuImYhVE
+        cFvza/WYBgIJAVTohG0Uhr2FDzB51bDGpdl6RI1L7o0Hft2aZAH2TPYTcxj4pEuK
+        A6HiLekJnW2LcdW8xr1GWCT0WahYTHO5vkQIKGrCb6+fzIVeNhbuRRIKVxXbHHid
+        tBaqOtHLIuTpbYE064IVW/PSP7leSksC3u2WO1Vlz7nvYcEQqkXaYB2YCKnk3N4O
+        Eqq5wn5lAgMBAAECggEAKxtE5ewP/efe9CPTMHPvqOohwIU3bpEaHrMn8nqaubNq
+        XD+Ui9x+NHOrk9KoDsXOLPRKNn0NJm7JTi869oUJbuOgweRDgRpLJ62wt+GjZqVv
+        tQPToK+oinVRhTfJmb1bWe2t1vwVOwmrnPtNyPeDXkQ0mDFl9Q39CyGxwmN3SrwE
+        cwKM9vFXxiH60T2UHok7/BW7Usb+4WJA4ov/bEoYAzkDQUnnRzjJO1RXFWjC8//M
+        XjuI0NZsQXK3LV9yukSONInevoc1MnoGHwe9UZ67tDnJigY9rd4fT6B1yiKuzLDv
+        oiDPdpm3plh/JnPLM16nOm7zJkmsbKG2RwfzUmLNxQKBgQD827lAPp3ePUrmRQQb
+        Xwqb4zNQZgDUBQc0bU6F1BxWQtx5LTafnjOYmqqhakpZrMDh69T/TwH8kbDutXcR
+        MWAO96yZ1IYRqsrorz4i4bCww1wDTpn7Aqz0xPkJqAucrfkUYoELf/Fl4P1dq4bs
+        4OkuMLtHefI2qd/3utQOhEnauwKBgQD7iD94k9RHpHL0vb4n4Jb2EC4I/se3J1Ls
+        0F37veMCQXOFKuWrka81DsqdRxu/wqZI4fkMnIe7NjGro2FFZg8MA3i4I6v3KRv9
+        RyTrLNXspIESjZ2oAkuVT9npRf86whvZa2H3n4bIowJHwak3lF63xq6jnVZlCkQL
+        TEhlRMFJXwKBgAmMlrtpYfbho7F8i8Io3bKzat2vbHqVUgdV1XBSaVuMnNzqqzRt
+        +g7aUHVWGUa3snUVve6CYlXSfrcVHVEF51XJXrhUgVerdoxBCfyxP0X9qrzpPAFx
+        wWxg//KwaPfazhxJ+AuiIlCxpX/jGW5atBOtfXUektojojSt1pJRxqQ/AoGAPcXd
+        SKCNjratYLvEmoiGqpGYrK7dn3Zx4CTgH/YnbSNj2n2JgBQ8QjyKuAuBnhuQuO9+
+        OYGrt+d8VVm/hsqkwV+M4zQnhIC9FfvF7lfJhd90r3jGEj/WDipZKvf80ZJgQooj
+        uiucb2PRKIxAIZ03kcyikR4P3KqjwV6PnQdArOMCgYBwBq8mBNlJwYUuLruQ1RM7
+        5LbP1e8C/YZ75N3CLPA14kDoW8qYC6X+KCQQgPXlQGDvTzAxg382NV53704H4ZAh
+        PVuwnoZzVs9VgOHduu8nUHHzh8+ukl+fX9dyzq/wjulx8fXcRewTXh9I892EjcJy
+        BG41O8RqoSHlssbZaJnugw==
+        -----END PRIVATE KEY-----
+      AUTH__JWT_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA+HICDZMfimMIiGdd0dPr
+        2N3zxHOJqiVXuvUj/aBBS7c8760rJUh4344sP/0Gid558yH/v1MtzZ0R9w09v6gb
+        SNrSiNwIUNGPhbnm9Jf+kMezsI/rkcIdoVm3KJ8CFUYy6MRPzW7iJmIVRHBb82v1
+        mAYCCQFU6IRtFIa9hQ8wedWwxqXZekSNS+6NB37dmmQB9kz2E3MY+KRLigOh4i3p
+        CZ1ti3HVvMa9Rlgk9FmoWExzub5ECChqwm+vn8yFXjYW7kUSClcV2xx4nbQWqjrR
+        yyLk6W2BNOuCFVvz0j+5XkpLAt7tljtVZc+572HBEKpF2mAdmAip5NzeDhKqucJ+
+        ZQIDAQAB
+        -----END PUBLIC KEY-----
+      AUTH_TOKEN_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA+HICDZMfimMIiGdd0dPr
+        2N3zxHOJqiVXuvUj/aBBS7c8760rJUh4344sP/0Gid558yH/v1MtzZ0R9w09v6gb
+        SNrSiNwIUNGPhbnm9Jf+kMezsI/rkcIdoVm3KJ8CFUYy6MRPzW7iJmIVRHBb82v1
+        mAYCCQFU6IRtFIa9hQ8wedWwxqXZekSNS+6NB37dmmQB9kz2E3MY+KRLigOh4i3p
+        CZ1ti3HVvMa9Rlgk9FmoWExzub5ECChqwm+vn8yFXjYW7kUSClcV2xx4nbQWqjrR
+        yyLk6W2BNOuCFVvz0j+5XkpLAt7tljtVZc+572HBEKpF2mAdmAip5NzeDhKqucJ+
+        ZQIDAQAB
+        -----END PUBLIC KEY-----
+      AUTH_MASTER_TOKEN: auth-master-token
+      US_MASTER_TOKEN: us-master-token
+      MASTER_TOKEN: us-master-token
+      # Connection passwords in US are fernet-encrypted; this is the official demo key.
+      CONTROL_API_CRYPTO_KEY: ZGF0YWxlbnN1bnNlY3VyZWZlcm5ldGNyeXB0b2tleQo=
+      DL_CRY_ACTUAL_KEY_ID: KEY
+      DL_CRY_KEY_VAL_ID_KEY: ZGF0YWxlbnN1bnNlY3VyZWZlcm5ldGNyeXB0b2tleQo=
+      RUST_LOG: info
+      DL_RAW_RESULT: "1"
+      DL_RAW_V8: "1"
+      DL_COMPRESSION: zstd
+      DL_COMPRESS_MIN_CHUNK: "4096"
+      DL_RUN_TIMEOUT_SECS: "120"
+      DL_DB_POOL_SIZE: "20"
+      DL_CONNECTION_CACHE_TTL_SECS: "0"
+      TOKIO_WORKER_THREADS: "7"
+      DL_DIALECT: postgres
+      DL_US_BRANCH: published
+      DL_US_CACHE_TTL_SECS: "0"
+      PREPARE_CACHE_TTL_SECS: "0"
+      US_ENTRY_CACHE_TTL_SECS: "60"
+      DATASET_FIELDS_TTL_SECS: "0"
+      FIELDS_CACHE_AUTH: "true"
+      TENANT_ID_OVERRIDE: common
+      US_SURPRESS_DB_STATUS_LOGS: "true"
+      EXPORT_DATA_VERIFICATION_KEY: dev-export-verification-key
+      MIMALLOC_PURGE_DELAY: "0"
+      CHART_EXTRA_CACHE_MAX: "256"
+      PARSED_SHARED_CACHE_MAX: "128"
+      PARSED_SHARED_CACHE_TTL_SECS: "900"
+      TABLE_REQUEST_CACHE_MAX: "128"
+      US_ENTRY_CACHE_MAX: "256"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8099:8099"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/monolith", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot: the official demo data, loaded from the Postgres image itself after the
+  # monolith has created the US schema. Nothing here comes from this repository.
+  seed:
+    image: ghcr.io/datalens-tech/datalens-postgres:16-1.3.0
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        export PGPASSWORD=postgres
+        until psql -h postgres -U pg-user -d pg-us-db -tAc "select 1 from workbooks limit 1" >/dev/null 2>&1; do sleep 2; done
+        count=$$(psql -h postgres -U pg-user -d pg-us-db -tAc "select count(*) from workbooks")
+        if [ "$$count" != "0" ]; then echo "demo data already present"; exit 0; fi
+        POSTGRES_USER_US=pg-user POSTGRES_PASSWORD_US=postgres POSTGRES_DB_US=pg-us-db         POSTGRES_USER_DEMO=pg-user POSTGRES_PASSWORD_DEMO=postgres POSTGRES_DB_DEMO=pg-demo-db         POSTGRES_HOST=postgres POSTGRES_PORT=5432 DEMO_DATA_NAME="DataLens Demo" HC=0 IS_FIX_DLS=false         INIT_DEMO_DATA=1 CONTROL_API_CRYPTO_KEY=ZGF0YWxlbnN1bnNlY3VyZWZlcm5ldGNyeXB0b2tleQo=         /init/seed-demo-data.sh
+    environment:
+      PGPASSWORD: postgres
+    depends_on:
+      monolith:
+        condition: service_healthy
+    restart: "no"
+
+  ui:
+    image: ghcr.io/datalens-tech/datalens-ui:0.3831.0
+    environment:
+      APP_MODE: full
+      APP_ENV: production
+      APP_INSTALLATION: opensource
+      APP_VERSION: 0.3831.0
+      RELEASE_VERSION: 2.9.0
+      NODE_ENV: production
+      APP_PORT: "3030"
+      WORKERS: "1"
+      TZ: Etc/UTC
+      AUTH_ENABLED: "true"
+      AUTH_POLICY: required
+      AUTH_SIGNUP_DISABLED: "true"
+      AUTH_ENDPOINT: http://monolith:8097
+      US_ENDPOINT: http://monolith:8099
+      BI_DATA_ENDPOINT: http://monolith:8099
+      BI_API_ENDPOINT: http://monolith:8099
+      META_MANAGER_ENDPOINT: http://monolith:8099
+      EXPORT_WORKBOOK_ENABLED: "true"
+      UI_CORE_CDN: "false"
+      APP_BUILDER_CDN: "false"
+      HC: "0"
+      HC_MODULES: ""
+      HC_ENDPOINT: ""
+      HC_PROTOCOL: ""
+      YANDEX_MAP_ENABLED: "0"
+      YANDEX_MAP_TOKEN: ""
+      AUTH_TOKEN_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA+HICDZMfimMIiGdd0dPr
+        2N3zxHOJqiVXuvUj/aBBS7c8760rJUh4344sP/0Gid558yH/v1MtzZ0R9w09v6gb
+        SNrSiNwIUNGPhbnm9Jf+kMezsI/rkcIdoVm3KJ8CFUYy6MRPzW7iJmIVRHBb82v1
+        mAYCCQFU6IRtFIa9hQ8wedWwxqXZekSNS+6NB37dmmQB9kz2E3MY+KRLigOh4i3p
+        CZ1ti3HVvMa9Rlgk9FmoWExzub5ECChqwm+vn8yFXjYW7kUSClcV2xx4nbQWqjrR
+        yyLk6W2BNOuCFVvz0j+5XkpLAt7tljtVZc+572HBEKpF2mAdmAip5NzeDhKqucJ+
+        ZQIDAQAB
+        -----END PUBLIC KEY-----
+      AUTH_MASTER_TOKEN: auth-master-token
+      US_MASTER_TOKEN: us-master-token
+    volumes:
+      - ./ui-nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      monolith:
+        condition: service_started
+    ports:
+      - "8091:8080"
+    restart: unless-stopped

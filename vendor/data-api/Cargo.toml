@@ -1,0 +1,75 @@
+[workspace]
+members = [
+    "crates/dl_core",
+    "crates/dl_query",
+    "crates/dl_api",
+    "crates/dl_postgres",
+    "crates/dl_clickhouse",
+    "crates/dl_mysql",
+    "crates/dl_us",
+    "crates/datalens-server",
+    "dfl_native",
+]
+resolver = "2"
+
+[workspace.package]
+# The DataLens data-api release this implementation targets and replaces. The same number is
+# used for the workspace packages, so the sources, the image and the upstream release line up.
+version = "0.2457.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# The formula engine is reused as a plain Rust library: no ctypes, no FFI, no Python.
+dfl_native = { path = "dfl_native" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-0_8"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = [
+    "compression-br",
+    "compression-deflate",
+    "compression-gzip",
+    "compression-zstd",
+] }
+http-body-util = "0.1"
+# `join_all`/`join!`: the blocks of one request run at the same time (dl_api), and so do the
+# tests that assert it.
+futures = "0.3"
+# `application/msgpack` answers (`dl_api::codec`): the second body format, next to JSON.
+rmp-serde = "1"
+# Only the tests decode a `content-encoding: gzip` body back.
+flate2 = "1"
+# Fernet (AES-128-CBC + HMAC-SHA256) for the `cypher_text` secrets `us` returns.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+# CSPRNG for fernet-encrypting new connection secrets.
+getrandom = "0.2"
+chrono = "0.4"
+uuid = "0.8"
+# NATIVE auth (`AUTH__TYPE=NATIVE`): PS256/RS256 JWT validation with the same claims as
+# `dl_auth_native` (`userId`, `exp`, `roles`). Pure-Rust crypto backend, no OpenSSL.
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+# PostgreSQL TLS: `tokio-postgres` has no TLS of its own; this supplies a rustls connector.
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring", "webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
+
+[profile.release]
+# The image ships a single static binary on `scratch`; strip + abort keep it small.
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

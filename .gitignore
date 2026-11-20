@@ -1,0 +1,19 @@
+.docker-config/
+/dist/
+/target/
+/bin/
+/deploy/run/
+/deploy/secrets/
+/deploy/certs/*.crt
+/deploy/certs/*.key
+/deploy/compose.secrets.yml
+/auth/target/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.env
+
+# Seed dumps are generated/downloaded, never committed (they contain live data).
+deploy/seed/*.dump
+dist/

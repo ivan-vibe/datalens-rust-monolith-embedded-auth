@@ -1,0 +1,74 @@
+[package]
+name = "datalens-monolith"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+alloc-profile = []
+# Allocator selection (`src/main.rs`):
+# * default on macOS = system malloc (measured equal-or-better RPS at 64 clients and 30-60 MB
+#   lower retained footprint, see bench/rail/MEMORY.md);
+# * default on other targets = mimalloc (the original musl perf choice);
+# * `system-alloc` forces the system allocator everywhere, `mimalloc-alloc` forces mimalloc
+#   everywhere (A/B builds).
+system-alloc = []
+mimalloc-alloc = []
+
+[dependencies]
+# Process-wide allocator (used in `src/main.rs`): the /api/run hot path allocates many
+# small serde_json `Value`s, `String`s and `Vec` buffers per request, and musl's default
+# allocator is a measurable cost there. `mimalloc` is the fastest general-purpose
+# allocator that builds cleanly against musl without extra system packages.
+# `default-features = false` keeps the libc `malloc` override off; the allocator is
+# installed explicitly with `#[global_allocator]` instead.
+mimalloc = { version = "0.1.52", default-features = false }
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+flate2 = "1"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "zstd", "stream"] }
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+chrono = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["compression-zstd", "compression-gzip", "decompression-gzip", "decompression-deflate", "timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zstd = "0.13"
+
+datalens-server = { path = "vendor/data-api/crates/datalens-server" }
+dl_api = { path = "vendor/data-api/crates/dl_api" }
+dl_query = { path = "vendor/data-api/crates/dl_query" }
+dl_us = { path = "vendor/data-api/crates/dl_us" }
+us-rs = { path = "vendor/us-rust" }
+# Durable workbook-transfer job store (`src/workbook_queue.rs`): the monolith already links
+# tokio-postgres through `dl_postgres`, but the store needs typed JSONB parameters instead of
+# the text-only executor, so it is declared as a direct dependency.
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+dl_postgres = { path = "vendor/data-api/crates/dl_postgres" }
+dl_core = { path = "vendor/data-api/crates/dl_core" }
+dl_clickhouse = { path = "vendor/data-api/crates/dl_clickhouse" }
+# Single-binary fork: the auth service is linked into the monolith (no separate process).
+datalens-auth-rs = { path = "auth" }
+
+# Benchmark/build profile for the lab images.
+#
+# The measured workload is CPU-bound: JSON/serde, chart building and (when
+# enabled) compression all run in Rust on the request path. `opt-level = "z"`
+# is a *size* profile and gives up real throughput for a smaller binary; keep
+# size off the hot path and let fat LTO + one codegen unit do the inlining.
+# `strip` keeps the scratch image small and does not change codegen.
+# `incremental`/`debug` are explicit so a stray RUSTFLAGS/workspace default
+# cannot silently turn on debug info or the incremental cache in release.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = 3
+strip = true
+debug = false
+incremental = false

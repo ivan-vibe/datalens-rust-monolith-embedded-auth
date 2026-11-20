@@ -1,0 +1,10 @@
+DataLens Rust Monolith
+Copyright (c) 2026
+
+This product includes software derived from DataLens
+(https://github.com/datalens-tech/datalens), licensed under the Apache License, Version 2.0.
+The Rust data-api/us ports under vendor/ retain their original copyright and license notices.
+
+This is an unofficial project, not affiliated with or endorsed by DataLens, its maintainers,
+or Yandex. DataLens and related names/logos are trademarks of their respective owners.
+

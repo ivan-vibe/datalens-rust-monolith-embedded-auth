@@ -1,0 +1,4 @@
+# Generated registry tables and the lock file are not interesting in diffs.
+dfl_native/src/registry_generated.rs linguist-generated=true
+dfl_native/src/func_props_generated.rs linguist-generated=true
+Cargo.lock linguist-generated=true
