@@ -774,6 +774,102 @@ pub fn postgres_column(name: &str, udt_name: &str, nullable: bool) -> Value {
     })
 }
 
+
+async fn clickhouse_fetch(
+    connection: &UsConnection,
+    sql: &str,
+) -> Result<Vec<Vec<Option<String>>>, String> {
+    let config = dl_clickhouse::ClickHouseConfig::from_dsn(&connection.dsn)
+        .map_err(|error| format!("ClickHouse: {error}"))?;
+    let executor = dl_clickhouse::ClickHouseExecutor::new();
+    tokio::time::timeout(CONNECT_TIMEOUT, executor.query(&config, sql))
+        .await
+        .map_err(|_| "ClickHouse: query timed out".to_string())?
+        .map_err(|error| format!("ClickHouse: {error}"))
+}
+
+/// One table template of `/info/sources` for a ClickHouse source.
+pub fn clickhouse_source_item(connection_id: &str, db: &str, table: &str) -> Value {
+    let parameters = json!({"db_name": db, "table_name": table});
+    let parameters_map = match parameters.as_object() {
+        Some(map) => map,
+        None => empty_map(),
+    };
+    let parameter_hash = control_schemas::parameter_hash("CH_TABLE", connection_id, parameters_map);
+    json!({
+        "title": table,
+        "group": [db],
+        "source_type": "CH_TABLE",
+        "connection_id": connection_id,
+        "parameters": parameters,
+        "tab_title": Value::Null,
+        "form": Value::Null,
+        "disabled": false,
+        "parameter_hash": parameter_hash,
+    })
+}
+
+/// `Nullable(T)` / `LowCardinality(T)` unwrapped, plus the DataLens user type.
+fn clickhouse_user_type(ch_type: &str) -> (&str, bool) {
+    let mut inner = ch_type.trim();
+    let mut nullable = false;
+    loop {
+        if let Some(rest) = inner.strip_prefix("Nullable(").and_then(|value| value.strip_suffix(')')) {
+            nullable = true;
+            inner = rest.trim();
+            continue;
+        }
+        if let Some(rest) = inner
+            .strip_prefix("LowCardinality(")
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            inner = rest.trim();
+            continue;
+        }
+        break;
+    }
+    let user_type = if inner.starts_with("Date") || inner == "Date32" {
+        if inner.starts_with("DateTime") {
+            "genericdatetime"
+        } else {
+            "date"
+        }
+    } else if inner.starts_with("Float") || inner.starts_with("Decimal") {
+        "float"
+    } else if inner.starts_with("Int") || inner.starts_with("UInt") || inner.starts_with("Enum") {
+        "integer"
+    } else if inner == "Bool" || inner == "Boolean" {
+        "boolean"
+    } else if inner.starts_with("Array") || inner.starts_with("Tuple") || inner.starts_with("Map") {
+        "array"
+    } else if inner.is_empty() {
+        "string"
+    } else {
+        // String, FixedString, UUID, IPv4/6, JSON, Nothing, ...
+        "string"
+    };
+    (user_type, nullable)
+}
+
+/// One `RawSchema` column of a ClickHouse table.
+pub fn clickhouse_column(name: &str, ch_type: &str) -> Value {
+    let (user_type, nullable) = clickhouse_user_type(ch_type);
+    json!({
+        "name": name,
+        "title": name,
+        "nullable": nullable,
+        "description": "",
+        "native_type": {
+            "name": ch_type,
+            "nullable": nullable,
+            "native_type_class_name": "common_native_type",
+        },
+        "user_type": user_type,
+        "has_auto_aggregation": false,
+        "lock_aggregation": false,
+    })
+}
+
 /// `GET /connections/{id}/info/sources`: table templates from the database.
 ///
 /// `search_text` filters on the qualified `schema.table` name, `limit`/`offset` page the
@@ -785,13 +881,24 @@ pub async fn list_sources(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<Value>, String> {
-    let rows = postgres_fetch(
-        connection,
-        "SELECT table_schema, table_name FROM information_schema.tables \
-         WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
-         ORDER BY table_schema, table_name",
-    )
-    .await?;
+    let clickhouse = connection.kind == ConnectorKind::ClickHouse;
+    let rows = if clickhouse {
+        clickhouse_fetch(
+            connection,
+            "SELECT database, name FROM system.tables \
+             WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') \
+             ORDER BY database, name",
+        )
+        .await?
+    } else {
+        postgres_fetch(
+            connection,
+            "SELECT table_schema, table_name FROM information_schema.tables \
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY table_schema, table_name",
+        )
+        .await?
+    };
     let needle = search_text.map(str::to_ascii_lowercase).filter(|text| !text.is_empty());
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
@@ -806,7 +913,11 @@ pub async fn list_sources(
                 continue;
             }
         }
-        items.push(source_item(connection_id, &schema, &table));
+        items.push(if clickhouse {
+            clickhouse_source_item(connection_id, &schema, &table)
+        } else {
+            source_item(connection_id, &schema, &table)
+        });
     }
     let offset = offset.unwrap_or(0).min(items.len());
     let mut items = items.split_off(offset);
@@ -883,6 +994,28 @@ pub async fn source_schema(
                 .iter()
                 .zip(meta.db_types.iter())
                 .map(|(name, db_type)| postgres_column(name, db_type, true))
+                .collect())
+        }
+        "CH_TABLE" => {
+            let db = parameters.get("db_name").and_then(Value::as_str).unwrap_or("default");
+            let table = parameters
+                .get("table_name")
+                .and_then(Value::as_str)
+                .ok_or("Missing data for required field: table_name")?;
+            let sql = format!(
+                "SELECT name, type FROM system.columns WHERE database = {} AND table = {} \
+                 ORDER BY position",
+                sql_literal(db),
+                sql_literal(table),
+            );
+            let rows = clickhouse_fetch(connection, &sql).await?;
+            Ok(rows
+                .iter()
+                .filter_map(|row| {
+                    let name = row.first().cloned().flatten()?;
+                    let ch_type = row.get(1).cloned().flatten()?;
+                    Some(clickhouse_column(&name, &ch_type))
+                })
                 .collect())
         }
         other => Err(format!("Unsupported source type for the native control-api: {other}")),
@@ -1380,5 +1513,39 @@ mod tests {
         assert_eq!(raw["enforce_collate"], "auto");
         assert_eq!(raw["raw_sql_level"], "off");
         assert_eq!(raw["name"], Value::Null);
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_introspection_tests {
+    use super::*;
+    use dl_us::connection::{ConnectorKind, UsConnection};
+
+    fn test_connection() -> Option<UsConnection> {
+        let dsn = std::env::var("DL_TEST_CLICKHOUSE_DSN").ok()?;
+        Some(UsConnection {
+            dsn,
+            ssl_required: false,
+            kind: ConnectorKind::ClickHouse,
+            cache_ttl_sec: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn clickhouse_lists_tables_and_columns() {
+        let Some(connection) = test_connection() else { return };
+        let sources = list_sources(&connection, "test-connection", None, None, None)
+            .await
+            .expect("list sources");
+        assert!(!sources.is_empty(), "fin_ops should expose its tables");
+        assert!(sources.iter().any(|item| item["source_type"] == "CH_TABLE"));
+
+        let parameters = json!({"db_name": "fin_ops", "table_name": "fin_ozon_accruals_v2"});
+        let parameters = parameters.as_object().expect("parameters").clone();
+        let schema = source_schema(&connection, "CH_TABLE", &parameters)
+            .await
+            .expect("source schema");
+        assert!(!schema.is_empty(), "the table should expose its columns");
+        assert!(schema.iter().all(|column| column.get("user_type").is_some()));
     }
 }
