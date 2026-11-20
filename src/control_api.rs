@@ -1496,6 +1496,7 @@ async fn materialize_source_fields(content: &mut Value) {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut sources_out: Vec<Value> = Vec::with_capacity(sources.len());
     for source in &sources {
         let source_id = source.get("id").and_then(Value::as_str).unwrap_or_default();
         let Some(avatar) = avatars.iter().find(|avatar| {
@@ -1523,6 +1524,17 @@ async fn materialize_source_fields(content: &mut Value) {
         else {
             continue;
         };
+        // The Python control-api also fills the source's `raw_schema` and the display flags;
+        // the editor renders the source panel from them.
+        let mut source = source.clone();
+        if let Some(object) = source.as_object_mut() {
+            object.insert("raw_schema".to_string(), Value::Array(columns.clone()));
+            object.entry("valid".to_string()).or_insert(json!(true));
+            object.entry("managed_by".to_string()).or_insert(json!("user"));
+            object.entry("virtual".to_string()).or_insert(json!(false));
+            object.entry("index_info_set".to_string()).or_insert(Value::Null);
+        }
+        sources_out.push(source);
         for column in columns {
             let Some(name) = column.get("name").and_then(Value::as_str) else { continue };
             let user_type = column
@@ -1543,6 +1555,9 @@ async fn materialize_source_fields(content: &mut Value) {
     }
     if let Some(object) = content.as_object_mut() {
         object.insert("result_schema".to_string(), Value::Array(schema));
+        if !sources_out.is_empty() {
+            object.insert("sources".to_string(), Value::Array(sources_out));
+        }
     }
 }
 
