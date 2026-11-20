@@ -1,5 +1,5 @@
 # DataLens Rust monolith — common tasks.
-.PHONY: build check test test-auth up down reset ps logs parity
+.PHONY: build check test test-auth smoke-dataset e2e-ui up down reset ps logs parity
 
 build:            ## release build of the single binary (auth is inside)
 	cargo build --release
@@ -13,6 +13,12 @@ test:             ## unit tests (monolith + auth)
 
 test-auth:        ## auth crate tests only
 	cd auth && cargo test --offline || cargo test
+
+smoke-dataset:    ## replay the editor's second-drop/join/refresh flow against a live monolith
+	python3 scripts/dataset_editor_smoke.py
+
+e2e-ui:           ## browser-level dataset editor test (needs Chrome on :9224 and a live UI)
+	node scripts/ui_dataset_editor_e2e.mjs
 
 up:               ## build images and start the cluster (Docker)
 	./deploy/cluster.sh up

@@ -103,6 +103,16 @@ Standalone-бинарник auth (`cd auth && cargo build --release`) остаё
 (`DL_BATCH_CONCURRENCY`, `DL_STREAM_ITEM_TIMEOUT_SECS`, `DL_RUN_TIMEOUT_SECS`,
 `DL_ZSTD_STREAM_LEVEL`, `DL_PG_*`) и замеры — в [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
+## Тесты
+
+Методология и полный набор — [docs/TESTING.md](docs/TESTING.md). Коротко:
+
+* `make test` — юнит-тесты монолита и auth;
+* `make smoke-dataset` — replay реального запроса редактора (вторая таблица, связь,
+  `refresh_source`) против запущенного стенда, с проверкой ссылок `avatar/source/field`;
+* `make e2e-ui` — браузерный сценарий через Chrome DevTools Protocol: две таблицы drag-and-drop,
+  проверка ответа валидатора и нормального 400 до настройки join'а.
+
 ## Чего честно ждать
 
 * ранняя версия: parity покрывает демо-дашборд и основной control-api, не все
