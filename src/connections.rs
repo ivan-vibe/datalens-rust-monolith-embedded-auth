@@ -1537,10 +1537,17 @@ mod clickhouse_introspection_tests {
         let sources = list_sources(&connection, "test-connection", None, None, None)
             .await
             .expect("list sources");
-        assert!(!sources.is_empty(), "fin_ops should expose its tables");
+        assert!(!sources.is_empty(), "the test database should expose its tables");
         assert!(sources.iter().any(|item| item["source_type"] == "CH_TABLE"));
 
-        let parameters = json!({"db_name": "fin_ops", "table_name": "fin_ozon_accruals_v2"});
+        // The database/table are supplied by the environment so the repository carries no
+        // business schema names. `DL_TEST_CLICKHOUSE_DSN` alone checks the table listing.
+        let database = std::env::var("DL_TEST_CLICKHOUSE_DB").unwrap_or_default();
+        let table = std::env::var("DL_TEST_CLICKHOUSE_TABLE").unwrap_or_default();
+        if database.is_empty() || table.is_empty() {
+            return;
+        }
+        let parameters = json!({"db_name": database, "table_name": table});
         let parameters = parameters.as_object().expect("parameters").clone();
         let schema = source_schema(&connection, "CH_TABLE", &parameters)
             .await
